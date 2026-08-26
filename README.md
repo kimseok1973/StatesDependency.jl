@@ -273,6 +273,61 @@ bias, and it is the second reason the placebo is there: a positive point estimat
 not by itself evidence, only an excess over the shuffled panel is. Do not read the
 last digit of `gamma` as a structural quantity.
 
+### What the odds ratio actually says
+
+```
+odds ratio exp(gamma)      2.214   95% CI [  2.023,   2.423]
+```
+
+reads as: **having bought the brand on the previous occasion multiplies its choice
+odds by 2.21.** Odds, not probability.
+
+Since it is `exp(gamma)`, this line is just the `gamma` line transformed —
+`gamma = log(2.214) = 0.795`, and the interval is the `gamma` interval
+`[0.705, 0.885]` exponentiated end for end, because the map is monotone. What
+matters is that **the interval does not straddle 1**: `1` is `gamma = 0`, no
+effect.
+
+Precisely, for the same household with the same tastes, comparing an occasion
+where brand `j` was bought last time against one where it was not,
+
+```
+P(j) / P(anything else)   is multiplied by 2.21
+```
+
+and the same factor applies against any single rival brand, since a multinomial
+logit preserves those ratios.
+
+**Converting to probability depends on the brand's base share.** The same odds
+ratio of 2.21 works out very differently across the size distribution:
+
+| base share | probability after buying it last time | lift | ratio |
+|---:|---:|---:|---:|
+| 5% | 10.4% | +5.4 pt | 2.09× |
+| 10% | 19.7% | +9.7 pt | 1.97× |
+| 20% | 35.6% | +15.6 pt | 1.78× |
+| 30% | 48.7% | +18.7 pt | 1.62× |
+| 40% | 59.6% | **+19.6 pt** | 1.49× |
+| 50% | 68.9% | +18.9 pt | 1.38× |
+| 70% | 83.8% | +13.8 pt | 1.20× |
+
+Small brands get the biggest *multiple*, mid-sized brands (around a 40% share)
+the biggest *lift in percentage points*. The `choice prob. lift` line in the
+report is exactly this lift, averaged over brands and weighted by share. Read at
+the ends of the interval, a 25%-share brand gains between +15.3 and +19.7 points.
+
+**Do not read this line on its own.** An odds ratio above 1 is not evidence of
+state dependence: leftover heterogeneity and the short-panel bias push it above 1
+even when the truth is `gamma = 0`. The line to judge by is `EXCESS`. If the
+placebo's own odds ratio sits near 1.0, then nearly all of the 2.21 is real.
+
+You can also take it as a distribution:
+
+```julia
+posterior(res, :odds_ratio)       # the posterior of exp(gamma)
+lift_distribution(res, 0.25)      # probability lift for a 25%-share brand (needs Bijectors)
+```
+
 ## Posteriors, not just intervals
 
 Every reported quantity is also available as a `Distribution`, so you can sample
@@ -493,6 +548,60 @@ excess = γ − γ_placebo
   支配されます。**単独で読まないこと**
 
 `Rhat` と `ESS` は必ず確認してください。`Rhat > 1.01` のときは警告が出ます。
+
+### オッズ比の読み方
+
+```
+odds ratio exp(gamma)      2.214   95% CI [  2.023,   2.423]
+```
+
+これは「**前回そのブランドを買っていると、そのブランドの選択オッズが 2.21 倍になる**」
+という意味です。確率が 2.21 倍ではなく、**オッズ**が 2.21 倍です。
+
+`exp(γ)` なので、この行は `gamma` の行を変換しただけのものです。
+γ = log(2.214) = **0.795**、CI は γ の区間 `[0.705, 0.885]` をそのまま指数変換した
+ものです（単調変換なので端点が対応します）。**区間が 1 を跨いでいない**のが要点で、
+1 は γ = 0＝効果なしに当たります。
+
+定義を正確に言うと、同じ世帯・同じ嗜好のもとで、ブランド j を前回買った場合と
+買わなかった場合を比べて
+
+```
+P(j) / P(他のどれか)  が  2.21 倍になる
+```
+
+です。分母が「他の特定のブランド k」でも同じ倍率になります（多項ロジットなので
+比が保たれる）。
+
+**確率に直すとシェア依存です。** 同じオッズ比 2.21 でも、ベースシェアによって
+効き方がまったく違います。
+
+| ベースシェア | 前回買った後の確率 | 上昇幅 | 倍率 |
+|---:|---:|---:|---:|
+| 5% | 10.4% | +5.4pt | 2.09倍 |
+| 10% | 19.7% | +9.7pt | 1.97倍 |
+| 20% | 35.6% | +15.6pt | 1.78倍 |
+| 30% | 48.7% | +18.7pt | 1.62倍 |
+| 40% | 59.6% | **+19.6pt** | 1.49倍 |
+| 50% | 68.9% | +18.9pt | 1.38倍 |
+| 70% | 83.8% | +13.8pt | 1.20倍 |
+
+**小ブランドほど「倍率」が大きく、中位ブランド（シェア 40% 付近）ほど「上昇幅」が
+大きい**という形です。レポートの `choice prob. lift` 行は、この上昇幅をシェアで
+加重平均したものです。CI の端で見ると、シェア 25% のブランドなら +15.3〜+19.7pt の
+幅になります。
+
+**この数字を単独で読まないでください。** オッズ比が 1 より大きいことは「状態依存が
+ある」証拠にはなりません。異質性の吸収し残しと短パネルの上方バイアスで、真の γ が 0 でも
+正に出ます。判断材料は `EXCESS` の行です。プラセボ側のオッズ比が 1.0 付近なら、
+この 2.21 倍のうちほぼ全部が本物ということになります。
+
+分布として取り出すこともできます:
+
+```julia
+posterior(res, :odds_ratio)       # exp(γ) の事後
+lift_distribution(res, 0.25)      # シェア 25% のブランドの確率上昇（要 Bijectors）
+```
 
 ## パネルではなく 1 世帯の長い履歴を使う: `mode = :single`
 
