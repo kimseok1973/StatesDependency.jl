@@ -1,0 +1,11 @@
+Manifest.toml
+test/Manifest.toml
+docs/build/
+docs/Manifest.toml
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+*.bin
+*.jld2
+.DS_Store
+Thumbs.db
