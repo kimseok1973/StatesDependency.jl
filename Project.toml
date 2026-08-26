@@ -1,7 +1,7 @@
 name = "StatesDependency"
 uuid = "076ca352-d46e-46fd-b77b-9a55eea9a322"
 authors = ["kimseok1973"]
-version = "0.3.0"
+version = "0.4.0"
 
 [deps]
 Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
@@ -25,7 +25,8 @@ julia = "1.9"
 
 [extras]
 Bijectors = "76274a88-744f-5084-9051-94815aaf08c4"
+CategoricalArrays = "324d7699-5711-5eae-9e2f-1d82baa6b597"
 Test = "8dfed614-e22c-0d48-5adb-50b2e3b3f0aa"
 
 [targets]
-test = ["Test", "Bijectors"]
+test = ["Test", "Bijectors", "CategoricalArrays"]

@@ -7,6 +7,8 @@ using InverseFunctions: inverse
 
 const HAS_BIJECTORS = Base.find_package("Bijectors") !== nothing
 HAS_BIJECTORS && @eval using Bijectors
+const HAS_CATEGORICAL = Base.find_package("CategoricalArrays") !== nothing
+HAS_CATEGORICAL && @eval import CategoricalArrays
 
 # Fast settings so the whole suite stays under a couple of minutes.
 const FAST = (K = 2, R = 4_000, burnin = 1_500, thin = 2, nchains = 2, verbose = false)
@@ -65,6 +67,79 @@ const FAST = (K = 2, R = 4_000, burnin = 1_500, thin = 2, nchains = 2, verbose =
         @test_throws ArgumentError build_panel([A]; tie_rule = :nonsense)
         @test_throws ArgumentError build_panel([reshape([1.0, 0.0], 2, 1)])
         @test_throws DimensionMismatch build_panel([A, B]; brand_names = ["a", "b"])
+    end
+
+    @testset "sequence input" begin
+        # the two forms from the docs
+        p = build_panel(["A", "B", "A"])
+        @test p.B == 2
+        @test p.brand_names == ["A", "B"]
+        @test choice_matrix(p) == [1.0 0.0 1.0; 0.0 1.0 0.0]
+        @test p.choices == [[1, 2, 1]]
+
+        q = build_panel([2, 2, 1, 1, 2])
+        @test q.B == 2
+        @test choice_matrix(q) == [0.0 0.0 1.0 1.0 0.0; 1.0 1.0 0.0 0.0 1.0]
+        @test q.choices == [[2, 2, 1, 1, 2]]
+        @test q.brand_names == ["brand1", "brand2"]
+
+        # symbols, chars, and a panel of sequences with pooled levels
+        @test build_panel([:b, :a, :b]).brand_names == ["a", "b"]
+        @test build_panel(['x', 'y', 'x']).brand_names == ["x", "y"]
+        r = build_panel([["a", "b", "a", "a"], ["b", "c", "b"], ["c", "a", "c"]])
+        @test n_households(r) == 3
+        @test r.B == 3
+        @test r.brand_names == ["a", "b", "c"]
+        @test r.choices == [[1, 2, 1, 1], [2, 3, 2], [3, 1, 3]]
+
+        # integer sequences, one per household, pooled over the max code
+        ri = build_panel([[1, 2, 1], [3, 3, 1]])
+        @test ri.B == 3
+        @test ri.choices == [[1, 2, 1], [3, 3, 1]]
+
+        # missing is an occasion with no purchase
+        m = build_panel([1, missing, 2, 1])
+        @test m.dropped_zero_columns == 1
+        @test m.choices == [[1, 2, 1]]
+        @test choice_matrix(m) == [1.0 0.0 1.0; 0.0 1.0 0.0]
+        ml = build_panel(["A", missing, "B", "A"])
+        @test ml.choices == [[1, 2, 1]]
+
+        # brand_names fixes the level set and its order
+        n = build_panel(["b", "a", "b", "a"]; brand_names = ["b", "a"])
+        @test n.brand_names == ["b", "a"]
+        @test n.choices == [[1, 2, 1, 2]]
+        ni = build_panel([1, 2, 1]; brand_names = ["x", "y", "z"])
+        @test ni.B == 3
+
+        # a never-bought brand warns, and drop_unused removes it
+        u = build_panel(["A", "C", "A", "C"]; brand_names = ["A", "B", "C"])
+        @test u.B == 3 && isempty(u.dropped_brands)
+        d = build_panel(["A", "C", "A", "C"]; brand_names = ["A", "B", "C"],
+                        drop_unused = true)
+        @test d.B == 2
+        @test d.brand_names == ["A", "C"]
+        @test d.dropped_brands == ["B"]
+        @test d.choices == [[1, 2, 1, 2]]
+
+        # the estimators accept sequences directly
+        seqs = [string.(v) for v in simulate_panel(H = 60, B = 3, T = 8,
+                                                   gamma = 0.8, seed = 51).choices]
+        res = DHRTests(seqs; K = 1, R = 1_500, burnin = 600, thin = 2, nchains = 1,
+                       placebo = false, compare_null = false, verbose = false)
+        @test res isa DHRTestResult
+        long = simulate_panel(H = 1, B = 3, T = 250, gamma = 1.0, K = 1, seed = 52)
+        rs = DHRTests(long.choices[1]; mode = :single, nperm = 99, verbose = false)
+        @test rs isa DHRSingleResult
+        @test rs.gamma > 0
+
+        # errors
+        @test_throws ArgumentError build_panel([0, 1, 2])
+        @test_throws ArgumentError build_panel(["A", "B"]; brand_names = ["A"])
+        @test_throws ArgumentError build_panel([1, 2, 3]; brand_names = ["a", "b"])
+        @test_throws ArgumentError build_panel(String[])
+        @test_throws ArgumentError build_panel([["a", "b"], String[]])
+        @test_throws ArgumentError build_panel(["A", "A", "A"])   # one brand only
     end
 
     @testset "shuffle_panel" begin
@@ -362,6 +437,38 @@ const FAST = (K = 2, R = 4_000, burnin = 1_500, thin = 2, nchains = 2, verbose =
         @test_throws ArgumentError LiftBijector(1.0)
         @test_throws ArgumentError LiftBijector(-0.2)
         @test_throws DomainError inverse(LiftBijector(0.25))(0.9)
+    end
+
+    if HAS_CATEGORICAL
+        @testset "CategoricalVector input" begin
+            cv = CategoricalArrays.categorical(["B", "A", "B", "C", "A"])
+            p = build_panel(cv)
+            @test p.brand_names == ["A", "B", "C"]
+            @test p.choices == [[2, 1, 2, 3, 1]]
+
+            # the declared level order wins over alphabetical
+            cv2 = CategoricalArrays.categorical(["B", "A", "B", "A"];
+                                                levels = ["B", "A"])
+            p2 = build_panel(cv2)
+            @test p2.brand_names == ["B", "A"]
+            @test p2.choices == [[1, 2, 1, 2]]
+
+            # ordered categoricals and missings
+            cv3 = CategoricalArrays.categorical(["low", "high", "low"];
+                                                levels = ["low", "high"],
+                                                ordered = true)
+            @test build_panel(cv3).brand_names == ["low", "high"]
+            cv4 = CategoricalArrays.categorical(["A", missing, "B", "A"])
+            @test build_panel(cv4).choices == [[1, 2, 1]]
+
+            # a panel of categorical vectors
+            p5 = build_panel([CategoricalArrays.categorical(["A", "B", "A"]),
+                              CategoricalArrays.categorical(["B", "B", "A", "A"])])
+            @test n_households(p5) == 2
+            @test p5.brand_names == ["A", "B"]
+        end
+    else
+        @info "CategoricalArrays.jl not in this environment - those tests skipped"
     end
 
     if HAS_BIJECTORS

@@ -8,8 +8,10 @@ Dubé, Hitsch & Rossi (2010), *State dependence and alternative explanations for
 consumer inertia*, Quantitative Marketing and Economics 8(4), 417–445.
 
 Input is the simplest thing a panel gives you: one **brand (row) × purchase-occasion
-(column)** quantity matrix per household. One call returns the state-dependence
-coefficient with a credible interval, an order-shuffled placebo, and a verdict.
+(column)** quantity matrix per household — or just the sequence of brands each
+household bought, as labels, a `CategoricalVector`, or integer codes. One call
+returns the state-dependence coefficient with a credible interval, an
+order-shuffled placebo, and a verdict.
 
 ```julia
 using StatesDependency
@@ -54,6 +56,8 @@ Julia 1.9+. The only non-stdlib dependencies are `Distributions` and
 
 ## Input format
 
+### Quantity matrices
+
 `X` is a `Vector` of `B × T_h` matrices — one per household, ragged `T_h` allowed —
 or a `B × T × H` array.
 
@@ -63,6 +67,36 @@ or a `B × T × H` array.
 * **Cells are quantities.** An all-zero column is a no-purchase occasion and is
   dropped; a column with several positive rows is resolved by `tie_rule`
   (`:argmax` by default, or `:error` / `:drop`).
+
+### Choice sequences
+
+You can also pass the choices themselves, one element per occasion, and the
+indicator matrices are built for you:
+
+```julia
+build_panel(["A", "B", "A"])       # -> [1 0 1
+                                   #     0 1 0]
+build_panel([2, 2, 1, 1, 2])       # -> [0 0 1 1 0
+                                   #     1 1 0 0 1]
+```
+
+* **Labels** — strings, symbols, characters, or a `CategoricalVector`. Rows come
+  out in sorted label order; for a categorical, in its declared level order
+  (`categorical(x; levels = ["B", "A"])` keeps `B` first, and `ordered = true`
+  works too). No dependency on CategoricalArrays.jl is involved — it works
+  through `sort`/`unique`.
+* **Codes** — positive integers indexing the brands directly, so `2` is row 2.
+* **A `Vector` of such vectors** is a panel, one element per household. Levels are
+  pooled across households, so everybody ends up with the same row order.
+* `missing` inside a sequence is an occasion with no purchase; it becomes an
+  all-zero column and is dropped like any other.
+
+`brand_names` fixes the level set and its order instead of inferring it, and
+`choice_matrix(build_panel(X))` shows exactly how a sequence was read.
+
+A brand that nobody ever buys — easy to end up with from unused categorical
+levels — warns, because its intercept is identified only by the prior. Pass
+`drop_unused = true` to remove it.
 
 Households with fewer than two occasions are dropped, and **the first occasion of
 every household is not used** — its lagged choice is unobserved, so the initial
@@ -184,7 +218,8 @@ null_distribution(r, :window)     # the permutation distribution itself
 | `DHRTests(X; mode = :single)` | one long history; returns a `DHRSingleResult` |
 | `simulate_panel(; ...)` | dummy panel with a known `gamma` |
 | `dummy_data(; ...)` | just the input matrices |
-| `build_panel(X; ...)` | matrices → `PurchasePanel` (useful to inspect the parsing) |
+| `build_panel(X; ...)` | matrices or sequences → `PurchasePanel` |
+| `choice_matrix(p, h)` | the `B × T` indicator matrix a sequence was read as |
 | `shuffle_panel(p, rng)` | the order-shuffled placebo panel |
 | `window_shuffle(y, w, rng)` | the within-window order null for one sequence |
 | `sampling_distribution(r)` | `Normal(gamma, se)` for a single-household result |
@@ -386,6 +421,32 @@ res = DHRTests(X; brand_names = ["A", "B", "C", "D"])
   1 列に複数のブランドが立っている場合は `tie_rule`（既定 `:argmax`）で解決します。
 * 購買機会が 2 回未満の世帯は落とします。また **各世帯の最初の機会は推定に使いません**
   （ラグが観測されないため、初期条件は所与とする。DHR と同じ扱い）。
+
+### 選択系列をそのまま渡す
+
+行列を組まずに、機会ごとの選択そのものを渡せます。指示行列は内部で作ります。
+
+```julia
+build_panel(["A", "B", "A"])       # -> [1 0 1
+                                   #     0 1 0]
+build_panel([2, 2, 1, 1, 2])       # -> [0 0 1 1 0
+                                   #     1 1 0 0 1]
+```
+
+* **ラベル** … 文字列・シンボル・文字・`CategoricalVector`。行はラベルのソート順、
+  カテゴリカルなら**宣言した水準順**（`categorical(x; levels = ["B","A"])` なら B が先。
+  `ordered = true` も可）。CategoricalArrays.jl への依存はありません（`sort`/`unique`
+  だけで動きます）。
+* **コード** … 1 以上の整数。`2` はそのまま 2 行目です。
+* **その Vector** … 1 要素 1 世帯のパネルになります。水準は全世帯でプールするので、
+  行の順序は全員共通です。
+* 系列中の `missing` は「買わなかった機会」。全ゼロ列になって落とされます。
+
+`brand_names` を渡せば水準集合と順序を固定できます。
+`choice_matrix(build_panel(X))` でどう読まれたか確認できます。
+
+**誰も買っていないブランド**があると警告が出ます（カテゴリカルの未使用水準で起きがち）。
+その切片は尤度では識別されず事前分布だけで決まるためです。`drop_unused = true` で除去できます。
 
 ## 何を推定しているか
 

@@ -28,7 +28,7 @@ using Distributions
 using InverseFunctions
 
 export DHRTests, DHRTestResult, DHRSingleResult
-export PurchasePanel, build_panel, shuffle_panel, lagged_repeat_rate
+export PurchasePanel, build_panel, shuffle_panel, lagged_repeat_rate, choice_matrix
 export n_households, n_occasions, n_used, n_covariates
 export simulate_panel, dummy_data
 export fit_hbmnl, HBMNLFit

@@ -89,6 +89,20 @@ Columns must be in chronological order -- the whole test is about what the
 *previous* column contained. An all-zero column is a no-purchase occasion and is
 dropped; a column with several positive rows is resolved by `tie_rule`.
 
+You can also hand it the choices directly, one element per occasion, and the
+indicator matrices are built for you:
+
+* brand **labels** -- `["A", "B", "A"]` becomes `[1 0 1; 0 1 0]`. Strings,
+  symbols and a `CategoricalVector` all work; rows come out in sorted label
+  order (level order for a categorical).
+* brand **codes** -- `[2, 2, 1, 1, 2]` becomes `[0 0 1 1 0; 1 1 0 0 1]`.
+* a `Vector` of such vectors, one per household, with the levels pooled across
+  households so everybody shares the row order.
+
+`missing` inside a sequence is an occasion with no purchase. `brand_names` fixes
+the level set and its order; `choice_matrix(build_panel(X))` shows how a
+sequence was read.
+
 # What is estimated
 
 A hierarchical Bayes multinomial logit,
@@ -174,6 +188,7 @@ function DHRTests(X;
                   brand_names = nothing,
                   tie_rule::Symbol = :argmax,
                   min_occasions::Int = 2,
+                  drop_unused::Bool = false,
                   seed::Integer = 20260826,
                   verbose::Bool = true,
                   mode::Symbol = :panel,
@@ -190,7 +205,8 @@ function DHRTests(X;
     Xin = (mode === :single && X isa AbstractMatrix) ? [X] : X
 
     panel = Xin isa PurchasePanel ? Xin :
-            build_panel(Xin; brand_names, covariates, tie_rule, min_occasions)
+            build_panel(Xin; brand_names, covariates, tie_rule, min_occasions,
+                        drop_unused)
 
     if mode === :single
         covariates === nothing || throw(ArgumentError(
