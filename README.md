@@ -117,6 +117,11 @@ $\gamma$. Otherwise it is `:inconclusive` or `:no_evidence`.
 | `fit_hbmnl(panel; ...)` | the sampler on its own |
 | `summarize(res)` | flat `NamedTuple` of headline numbers |
 | `gamma_draws(res)` | pooled posterior draws |
+| `posterior(res, :gamma)` | any reported quantity as a `Distribution` |
+| `effective_size(d)` | ESS behind a `PosteriorSample` |
+| `LiftBijector(share)` | `gamma` → choice-probability lift, invertible |
+| `lift_distribution(res, share)` | the same as a `Distribution` (needs Bijectors.jl) |
+| `lift_share(res)` | implied brand shares |
 | `split_rhat`, `ess` | MCMC diagnostics |
 
 Main keyword arguments of `DHRTests`:
@@ -156,6 +161,89 @@ estimator sits a little above the truth — around `+0.1` on `gamma` for a
 bias, and it is the second reason the placebo is there: a positive point estimate is
 not by itself evidence, only an excess over the shuffled panel is. Do not read the
 last digit of `gamma` as a structural quantity.
+
+## Posteriors, not just intervals
+
+Every reported quantity is also available as a `Distribution`, so you can sample
+from it and carry the uncertainty downstream instead of re-deriving it from a
+point estimate and an interval.
+
+```julia
+using Distributions
+
+d = posterior(res, :gamma)      # PosteriorSample <: ContinuousUnivariateDistribution
+rand(d, 10_000)                 # resample the actual draws
+quantile(d, 0.975)              # identical to res.gamma_ci[2]
+cdf(d, 0.0)                     # posterior mass below zero
+```
+
+`PosteriorSample` holds the MCMC draws themselves — no parametric assumption.
+`pdf`/`logpdf` come from a Gaussian kernel density estimate, which costs
+`O(ndraws)` per call and is meant for plotting. **Inside a sampler, fit a family
+first**; `fit` forwards to `Distributions.fit`, so any univariate family works:
+
+```julia
+n  = fit(Normal, posterior(res, :gamma))          # Normal(0.740, 0.042)
+ln = fit(LogNormal, posterior(res, :odds_ratio))
+```
+
+The `Normal` fit is a good approximation in practice — on a 350-household panel
+the posterior of `gamma` had skewness `+0.03` and excess kurtosis `+0.01`, and
+the fitted normal matched the empirical quantiles to within `0.15` standard
+deviations out to the 0.5% and 99.5% points.
+
+| `posterior(res, …)` | quantity |
+|---|---|
+| `:gamma` | the state-dependence coefficient |
+| `:placebo` | the same coefficient on the order-shuffled panel |
+| `:excess` | `gamma - gamma_placebo` — what the verdict is based on |
+| `:odds_ratio` | `exp(gamma)` |
+| `:lift` | share-weighted change in choice probability, percentage points |
+| `:beta, l` | covariate coefficient `l` |
+
+`gamma` and `gamma_placebo` come from independent posteriors, so `:excess` pairs
+draws at random — that is a draw from the posterior of the difference.
+
+**Effective sample size.** MCMC draws are autocorrelated. `effective_size(d)`
+reports the ESS; on the defaults a chain of 3200 draws typically carries an ESS
+near 570. Resampling 10,000 values from it does not give 10,000 independent
+samples — it is fine for propagating uncertainty, but do not quote it as a
+sample size.
+
+### With Bijectors.jl
+
+Bijectors is a **weak dependency**: the core package stays on `Distributions`
+alone, and loading Bijectors lights up the transform machinery.
+
+```julia
+using Bijectors
+
+transformed(posterior(res, :gamma), exp)            # empirical base, works as-is
+transformed(fit(Normal, posterior(res, :gamma)), exp)   # analytic logpdf
+```
+
+For `exp` you do not really need Bijectors — `exp` of a normal is exactly
+`LogNormal`. Bijectors earns its place for transforms with no named family, and
+the package ships one: `LiftBijector(share)` maps `gamma` to the change in the
+choice probability of a brand holding base share `share`,
+
+$$g \;\longmapsto\; \mathrm{logistic}\!\left(g + \mathrm{logit}(s)\right) - s$$
+
+with a closed-form inverse and log-Jacobian, so the result is a real
+`Distribution`:
+
+```julia
+b = LiftBijector(0.25)                    # a brand holding a 25% share
+d = lift_distribution(res, 0.25)          # == transformed(fit(Normal, γ), b)
+rand(d, 1000)                             # lift in probability units
+logpdf(d, 0.10)
+```
+
+`LiftBijector` is a plain callable in the core package and implements
+`InverseFunctions.inverse`, so it also composes outside the Bijectors ecosystem.
+For the share-weighted aggregate across all brands there is no closed-form
+inverse — use the exact draws, `posterior(res, :lift)`. Shares are available
+through `lift_share(res)`.
 
 ## Cost
 
@@ -268,6 +356,84 @@ excess = γ − γ_placebo
   支配されます。**単独で読まないこと**
 
 `Rhat` と `ESS` は必ず確認してください。`Rhat > 1.01` のときは警告が出ます。
+
+## 区間ではなく分布として取り出す
+
+報告される量はすべて `Distribution` として取り出せます。点推定と区間から組み直す
+のではなく、そのまま `rand` して下流に不確実性を流せます。
+
+```julia
+using Distributions
+
+d = posterior(res, :gamma)      # PosteriorSample <: ContinuousUnivariateDistribution
+rand(d, 10_000)                 # 事後draw の再抽出
+quantile(d, 0.975)              # res.gamma_ci[2] と一致
+cdf(d, 0.0)                     # 0 以下の事後質量
+```
+
+`PosteriorSample` は draw そのものを保持します（近似なし）。`pdf` / `logpdf` は
+ガウスカーネル密度推定なので 1 回あたり `O(ndraws)` かかります。作図用と考えてください。
+**サンプラーの中で使うならパラメトリックに当てはめてから**どうぞ。`fit` は
+`Distributions.fit` に委譲するので任意の一変量分布族が使えます:
+
+```julia
+n  = fit(Normal, posterior(res, :gamma))          # Turing の prior に刺せる
+ln = fit(LogNormal, posterior(res, :odds_ratio))
+```
+
+正規近似は実用上よく当たります。350 世帯パネルでの実測で γ の事後は歪度 `+0.03`、
+超過尖度 `+0.01`、当てはめた正規と経験分位点の差は 0.5% 点・99.5% 点でも
+標準偏差の 0.15 倍以内でした。
+
+| `posterior(res, …)` | 量 |
+|---|---|
+| `:gamma` | 状態依存係数 |
+| `:placebo` | 順序シャッフル後のパネル上の同じ係数 |
+| `:excess` | `gamma − gamma_placebo` — 判定の根拠 |
+| `:odds_ratio` | `exp(gamma)` |
+| `:lift` | 選択確率の変化（シェア加重、%pt） |
+| `:beta, l` | 共変量係数 `l` |
+
+`gamma` と `gamma_placebo` は独立した事後なので、`:excess` は draw をランダムに
+組み合わせています。これが差の事後からの draw そのものです。
+
+**有効サンプルサイズに注意。** MCMC の draw は自己相関しています。`effective_size(d)`
+で ESS が取れます。既定設定だと 3200 draw に対して ESS はおよそ 570 です。そこから
+10,000 個 `rand` しても独立サンプル 10,000 個にはなりません（不確実性の伝播には十分ですが、
+サンプルサイズとして引用しないでください）。
+
+### Bijectors.jl を使う
+
+Bijectors は **weak dependency** です。コアは `Distributions` だけのまま、
+`using Bijectors` したときだけ変換系が有効になります。
+
+```julia
+using Bijectors
+
+transformed(posterior(res, :gamma), exp)                  # 経験分布のままでも動く
+transformed(fit(Normal, posterior(res, :gamma)), exp)     # 解析的な logpdf 付き
+```
+
+`exp` だけなら実は Bijectors は不要です（正規の exp は厳密に `LogNormal`）。
+Bijectors が効くのは **名前の付いた分布族にならない変換**で、本パッケージは
+その例を 1 つ同梱しています。`LiftBijector(share)` は γ を「ベースシェア `share` の
+ブランドの選択確率の変化」に写す単調変換で、
+
+$$g \;\longmapsto\; \mathrm{logistic}\!\left(g + \mathrm{logit}(s)\right) - s$$
+
+逆関数も log ヤコビアンも閉じた形で持っているので、結果は本物の `Distribution` です:
+
+```julia
+b = LiftBijector(0.25)                    # シェア 25% のブランド
+d = lift_distribution(res, 0.25)          # == transformed(fit(Normal, γ), b)
+rand(d, 1000)                             # 確率単位のリフト
+logpdf(d, 0.10)
+```
+
+`LiftBijector` はコア側では単なる callable で、`InverseFunctions.inverse` を実装
+しているので Bijectors の外でも合成できます。全ブランドのシェア加重合計には閉じた
+逆関数が無いので、そちらは厳密な draw（`posterior(res, :lift)`）を使ってください。
+シェアは `lift_share(res)` で取れます。
 
 ## テスト
 

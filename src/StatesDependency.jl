@@ -25,6 +25,7 @@ using Random
 using Statistics
 using Printf
 using Distributions
+using InverseFunctions
 
 export DHRTests, DHRTestResult
 export PurchasePanel, build_panel, shuffle_panel, lagged_repeat_rate
@@ -33,11 +34,15 @@ export simulate_panel, dummy_data
 export fit_hbmnl, HBMNLFit
 export split_rhat, ess
 export summarize, gamma_draws
+export posterior, PosteriorSample, effective_size, draws, lift_share
+export LiftBijector, InverseLiftBijector, lift_distribution, lift_logabsdetjac
 
 include("panel.jl")
 include("diagnostics.jl")
+include("transforms.jl")
 include("hbmnl.jl")
 include("simulate.jl")
 include("dhrtests.jl")
+include("posterior.jl")
 
 end # module

@@ -59,6 +59,10 @@ struct DHRTestResult
     beta_mean::Vector{Float64}
     beta_ci::Vector{Tuple{Float64,Float64}}
 
+    excess_draws::Union{Nothing,Vector{Float64}}
+    lift_draws::Vector{Float64}
+    shares::Vector{Float64}
+
     verdict::Symbol
     accept_alpha::Float64
     accept_gamma::Float64
@@ -198,14 +202,18 @@ function DHRTests(X;
 
     pl = nothing
     exc = excci = pexc = nothing
+    exc_draws = nothing
     if fit_pl !== nothing
         gp  = vec(fit_pl.gamma)
         pl  = (mean = mean(gp), median = median(gp), sd = std(gp),
                ci = _ci(gp, level), p_positive = mean(>(0), gp),
                ess = ess(fit_pl.gamma), rhat = split_rhat(fit_pl.gamma))
+        # gamma and gamma_placebo come from independent posteriors, so pairing
+        # draws at random is a draw from the posterior of their difference.
         rng = Xoshiro(UInt64(seed) + 0xF00D)
         n   = max(length(g), length(gp))
         d   = [g[rand(rng, 1:length(g))] - gp[rand(rng, 1:length(gp))] for _ in 1:n]
+        exc_draws = d
         exc = mean(d); excci = _ci(d, level); pexc = mean(>(0), d)
     end
 
@@ -243,6 +251,7 @@ function DHRTests(X;
         fit_sd.lml_nr,
         fit_null === nothing ? nothing : fit_null.lml_nr,
         fit_sd.beta_mean, bci,
+        exc_draws, dpp, shares,
         verdict, fit_sd.accept_alpha, fit_sd.accept_gamma,
         (; sd = fit_sd, null = fit_null, placebo = fit_pl),
         (; K, R, burnin, thin, nchains, level, seed, placebo, compare_null))
@@ -269,11 +278,10 @@ end
 
 # share-weighted lift in choice probability from having bought the brand last time
 function _delta_share(shares::Vector{Float64}, g::Float64)
-    e = exp(g)
     d = 0.0
     for s in shares
-        p = s * e / (1 - s + s * e)
-        d += s * (p - s)
+        (0 < s < 1) || continue
+        d += s * (_logistic(g + _logit(s)) - s)
     end
     return d
 end

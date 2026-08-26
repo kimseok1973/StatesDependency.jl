@@ -2,6 +2,11 @@ using StatesDependency
 using Test
 using Random
 using Statistics
+using Distributions
+using InverseFunctions: inverse
+
+const HAS_BIJECTORS = Base.find_package("Bijectors") !== nothing
+HAS_BIJECTORS && @eval using Bijectors
 
 # Fast settings so the whole suite stays under a couple of minutes.
 const FAST = (K = 2, R = 4_000, burnin = 1_500, thin = 2, nchains = 2, verbose = false)
@@ -176,6 +181,151 @@ const FAST = (K = 2, R = 4_000, burnin = 1_500, thin = 2, nchains = 2, verbose =
         @test res.beta_ci[1][1] < res.beta_mean[1] < res.beta_ci[1][2]
         # pure noise: the coefficient should not be distinguishable from zero
         @test res.beta_ci[1][1] < 0 < res.beta_ci[1][2]
+    end
+
+    @testset "posterior as a Distribution" begin
+        sim = simulate_panel(H = 150, B = 4, T = 12, gamma = 0.8, seed = 41)
+        res = DHRTests(sim.X; K = 1, R = 3_000, burnin = 1_000, thin = 2,
+                       nchains = 2, verbose = false)
+
+        d = posterior(res, :gamma)
+        @test d isa PosteriorSample
+        @test length(draws(d)) == length(gamma_draws(res))
+        @test mean(d) ≈ res.gamma_mean
+        @test std(d) ≈ res.gamma_sd
+        @test median(d) ≈ res.gamma_median
+        @test quantile(d, 0.025) ≈ res.gamma_ci[1]
+        @test quantile(d, 0.975) ≈ res.gamma_ci[2]
+        @test effective_size(d) ≈ res.gamma_ess
+
+        # sampling
+        rng = Xoshiro(4)
+        x = rand(rng, d, 5_000)
+        @test length(x) == 5_000
+        @test all(v -> minimum(d) <= v <= maximum(d), x)
+        @test abs(mean(x) - mean(d)) < 4 * std(d)          # resampling is unbiased
+        @test rand(Xoshiro(9), d) == rand(Xoshiro(9), d)   # reproducible
+
+        # empirical cdf
+        @test cdf(d, minimum(d) - 1) == 0
+        @test cdf(d, maximum(d)) == 1
+        @test 0.4 < cdf(d, median(d)) < 0.6
+
+        # kernel density: positive, finite, and integrates to one
+        @test isfinite(logpdf(d, mean(d)))
+        @test pdf(d, mean(d)) > 0
+        @test logpdf(d, mean(d) + 50 * std(d)) < logpdf(d, mean(d))
+        @test isfinite(logpdf(d, mean(d) + 50 * std(d)))   # no underflow to -Inf
+        lo, hi = mean(d) - 8 * std(d), mean(d) + 8 * std(d)
+        grid = range(lo, hi; length = 2001)
+        mass = sum(pdf.(Ref(d), grid)) * step(grid)
+        @test 0.98 < mass < 1.02
+
+        # parametric approximation
+        n = fit(Normal, d)
+        @test n isa Normal
+        @test n.μ ≈ mean(d)
+        @test isfinite(logpdf(n, mean(d)))
+        @test abs(quantile(n, 0.975) - quantile(d, 0.975)) < 0.5 * std(d)
+        @test fit(LogNormal, posterior(res, :odds_ratio)) isa LogNormal
+
+        # the other quantities
+        @test mean(posterior(res, :excess)) ≈ res.excess
+        @test quantile(posterior(res, :excess), 0.025) ≈ res.excess_ci[1]
+        @test mean(posterior(res, :placebo)) ≈ res.placebo.mean
+        @test mean(posterior(res, :odds_ratio)) ≈ mean(exp.(gamma_draws(res)))
+        @test mean(posterior(res, :lift)) ≈ res.delta_pp
+        @test length(lift_share(res)) == 4
+        @test sum(lift_share(res)) ≈ 1
+
+        @test_throws ArgumentError posterior(res, :nonsense)
+        @test_throws ArgumentError posterior(res, :beta, 1)   # no covariates fitted
+
+        io = IOBuffer(); show(io, d)
+        @test occursin("PosteriorSample(:gamma", String(take!(io)))
+
+        # without a placebo fit there is no excess posterior
+        res2 = DHRTests(sim.X; K = 1, R = 2_000, burnin = 800, thin = 2, nchains = 1,
+                        placebo = false, compare_null = false, verbose = false)
+        @test_throws ArgumentError posterior(res2, :excess)
+        @test_throws ArgumentError posterior(res2, :placebo)
+    end
+
+    @testset "LiftBijector" begin
+        b = LiftBijector(0.25)
+        @test b(0.0) == 0.0                                # no state dependence, no lift
+        @test b(1.0) > 0 && b(-1.0) < 0
+        @test b(2.0) > b(1.0)                              # monotone increasing
+        @test b(10_000.0) ≈ 0.75 atol = 1e-6               # saturates at 1 - share
+
+        ib = inverse(b)
+        @test ib isa InverseLiftBijector
+        for g in (-2.0, -0.3, 0.0, 0.63, 1.7)
+            @test ib(b(g)) ≈ g atol = 1e-10
+        end
+        @test inverse(ib) isa LiftBijector
+
+        # analytic log|Jacobian| against a central difference
+        for g in (-1.0, 0.0, 0.63, 1.5)
+            h = 1e-6
+            num = log(abs((b(g + h) - b(g - h)) / (2h)))
+            @test lift_logabsdetjac(b, g) ≈ num atol = 1e-6
+            @test lift_logabsdetjac(ib, b(g)) ≈ -lift_logabsdetjac(b, g) atol = 1e-10
+        end
+
+        @test_throws ArgumentError LiftBijector(0.0)
+        @test_throws ArgumentError LiftBijector(1.0)
+        @test_throws ArgumentError LiftBijector(-0.2)
+        @test_throws DomainError inverse(LiftBijector(0.25))(0.9)
+    end
+
+    if HAS_BIJECTORS
+        @testset "Bijectors extension" begin
+            @test Base.get_extension(StatesDependency,
+                                     :StatesDependencyBijectorsExt) !== nothing
+
+            sim = simulate_panel(H = 120, B = 4, T = 10, gamma = 0.8, seed = 42)
+            res = DHRTests(sim.X; K = 1, R = 2_000, burnin = 800, thin = 2,
+                           nchains = 1, compare_null = false, verbose = false)
+            d = posterior(res, :gamma)
+            n = fit(Normal, d)
+            b = LiftBijector(0.25)
+
+            @test Bijectors.bijector(d) === identity
+
+            # the empirical posterior composes directly
+            t1 = Bijectors.transformed(d, exp)
+            @test isfinite(rand(Xoshiro(1), t1))
+            @test isfinite(logpdf(t1, exp(mean(d))))
+
+            # the parametric fit plus our bijector gives an analytic logpdf
+            t2 = Bijectors.transformed(n, b)
+            @test isfinite(logpdf(t2, b(mean(d))))
+            s = rand(Xoshiro(2), t2, 20_000)
+            @test abs(mean(s) - b(mean(d))) < 5 * std(s) / sqrt(length(s)) + 1e-3
+            @test all(v -> -0.25 < v < 0.75, s)
+
+            _, lad = Bijectors.with_logabsdet_jacobian(b, 0.63)
+            @test lad ≈ lift_logabsdetjac(b, 0.63)
+            ib = Bijectors.inverse(b)
+            @test ib isa InverseLiftBijector
+            _, ladi = Bijectors.with_logabsdet_jacobian(ib, b(0.63))
+            @test ladi + lad ≈ 0 atol = 1e-10
+
+            t3 = lift_distribution(res, 0.25)
+            @test isfinite(logpdf(t3, b(mean(d))))
+            t4 = lift_distribution(res, 0.25; family = nothing)
+            @test isfinite(rand(Xoshiro(3), t4))
+        end
+    else
+        @info "Bijectors.jl not in this environment - extension tests skipped"
+        @testset "no-Bijectors fallback" begin
+            sim = simulate_panel(H = 40, B = 3, T = 8, seed = 43)
+            res = DHRTests(sim.X; K = 1, R = 1_000, burnin = 400, thin = 2,
+                           nchains = 1, placebo = false, compare_null = false,
+                           verbose = false)
+            @test_throws ArgumentError lift_distribution(res, 0.25)
+        end
     end
 
     @testset "argument validation" begin
