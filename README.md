@@ -49,7 +49,8 @@ using Pkg
 Pkg.add(url = "https://github.com/kimseok1973/StatesDependency.jl")
 ```
 
-Julia 1.9+. The only non-stdlib dependency is `Distributions`.
+Julia 1.9+. The only non-stdlib dependencies are `Distributions` and
+`InverseFunctions`. Bijectors.jl is optional (a package extension).
 
 ## Input format
 
@@ -104,15 +105,90 @@ The verdict is `:state_dependence` only when all three agree — the $\gamma$ in
 excludes zero, the excess interval excludes zero, and DIC prefers the model with
 $\gamma$. Otherwise it is `:inconclusive` or `:no_evidence`.
 
+## One long history instead of a panel: `mode = :single`
+
+```julia
+one = simulate_panel(H = 1, B = 4, T = 400, gamma = 0.8, seed = 2)
+DHRTests(one.X[1]; mode = :single)
+```
+
+With a single household there is nothing left for cross-sectional heterogeneity
+to hide in — `alpha` is a constant — so the whole hierarchical apparatus is
+unnecessary. `mode = :single` fits a **fixed-effect conditional logit** by
+Newton's method, tests `gamma = 0` by likelihood ratio, and reports a
+**profile-likelihood interval**. It returns a `DHRSingleResult`.
+
+**The confound changes form, it does not disappear.** What replaces heterogeneity
+is the household's own drift — tastes that move over months, a changing
+assortment, seasonality. A household that goes through phases produces runs that
+look exactly like inertia, and the global order shuffle used in panel mode
+cannot separate them: it destroys drift and state dependence together. So
+`mode = :single` shuffles occasions **inside short windows** instead. Over a
+window of ~20 occasions drift is approximately constant, so a window shuffle is
+a null for "no state dependence, preferences locally constant".
+
+Measured on simulated single households (B = 4, T = 300, 120 replications, 5%
+level, rejection rates):
+
+| scenario | LR test | global shuffle | **window shuffle** |
+|---|---:|---:|---:|
+| no SD, no drift | 6.7% | 5.8% | **4.2%** |
+| no SD, mild drift | 13.3% | 12.5% | **3.3%** |
+| no SD, **strong drift** | 67.2% | 73.1% | **10.1%** |
+| SD `gamma = 0.8`, no drift | 96.7% | 97.5% | **95.8%** |
+| SD `gamma = 0.8`, mild drift | 94.1% | 94.1% | **92.4%** |
+
+Both classical tests call two thirds of drifting households state dependent. The
+window null keeps the size near nominal and gives up essentially no power. Both
+p-values are reported, and the contrast between them is itself the diagnostic:
+
+| `p_global` | `p_window` | verdict |
+|---|---|---|
+| small | small | `:state_dependence` |
+| small | large | `:nonstationarity` — serial structure at the drift scale only |
+| large | large | `:no_evidence` |
+
+**How long does the history have to be?** With B = 4, at the 5% level:
+
+| occasions | size at `gamma = 0` | power at `gamma = 0.5` | power at `gamma = 1.0` | bias in `gamma` |
+|---:|---:|---:|---:|---:|
+| 25 | 6.6% | 10.6% | 36.0% | −1.15 |
+| 50 | 5.3% | 25.1% | 72.8% | −0.38 |
+| 100 | 5.8% | 49.5% | 90.5% | −0.31 |
+| 200 | 5.0% | 79.7% | 98.8% | −0.02 |
+| 400 | 3.2% | 95.0% | 99.5% | −0.07 |
+| 1000 | 5.5% | 99.0% | 99.5% | −0.00 |
+
+About 200 occasions is the practical floor. Note the bias runs the *other* way
+from the panel case: fixed effects with a lagged dependent variable bias `gamma`
+downwards (Nickell), and it dies off as `1/T`. Below 50 occasions the estimate is
+not worth reading; the report says so.
+
+Two things the numbers cannot fix. Households with 200+ occasions in one category
+are extreme heavy buyers, so **the result is selected**. And it answers "is *this*
+household inertial", not "are consumers inertial".
+
+```julia
+r = DHRTests(one.X[1]; mode = :single, window = 20, nperm = 999)
+r.ci_profile                      # prefer this over r.ci_wald
+r.p_window, r.p_global
+sampling_distribution(r)          # Normal(gamma, se), composes with LiftBijector
+null_distribution(r, :window)     # the permutation distribution itself
+```
+
 ## API
 
 | function | purpose |
 |---|---|
-| `DHRTests(X; ...)` | the test; returns a `DHRTestResult` |
+| `DHRTests(X; ...)` | the panel test; returns a `DHRTestResult` |
+| `DHRTests(X; mode = :single)` | one long history; returns a `DHRSingleResult` |
 | `simulate_panel(; ...)` | dummy panel with a known `gamma` |
 | `dummy_data(; ...)` | just the input matrices |
 | `build_panel(X; ...)` | matrices → `PurchasePanel` (useful to inspect the parsing) |
 | `shuffle_panel(p, rng)` | the order-shuffled placebo panel |
+| `window_shuffle(y, w, rng)` | the within-window order null for one sequence |
+| `sampling_distribution(r)` | `Normal(gamma, se)` for a single-household result |
+| `null_distribution(r, :window)` | the permutation distribution of `gamma` |
 | `lagged_repeat_rate(p)` | descriptive repeat share |
 | `fit_hbmnl(panel; ...)` | the sampler on its own |
 | `summarize(res)` | flat `NamedTuple` of headline numbers |
@@ -356,6 +432,73 @@ excess = γ − γ_placebo
   支配されます。**単独で読まないこと**
 
 `Rhat` と `ESS` は必ず確認してください。`Rhat > 1.01` のときは警告が出ます。
+
+## パネルではなく 1 世帯の長い履歴を使う: `mode = :single`
+
+```julia
+one = simulate_panel(H = 1, B = 4, T = 400, gamma = 0.8, seed = 2)
+DHRTests(one.X[1]; mode = :single)
+```
+
+世帯が 1 つなら、世帯間の観測されない異質性が隠れる場所はありません（α は定数）。
+階層モデルは不要になるので、`mode = :single` は **固定効果条件付きロジット**を
+Newton 法で当て、尤度比で `gamma = 0` を検定し、**プロファイル尤度区間**を返します
+（戻り値は `DHRSingleResult`）。
+
+**交絡は消えるのではなく形を変えます。** 異質性の代わりに来るのが、その世帯自身の
+**嗜好ドリフト**（数か月単位の好みの変化、配架の変化、季節性）です。時期によって
+好みが動く世帯は、慣性とまったく同じ見た目の連続を作ります。パネル版で使っている
+全体シャッフルではこれを分離できません（ドリフトも状態依存もまとめて壊すので）。
+そこで `mode = :single` は **短い窓の中だけでシャッフル**します。20 機会程度の窓の
+中ならドリフトはほぼ一定なので、これが「状態依存なし・嗜好は局所的に一定」の null に
+なります。
+
+ダミーの単一世帯での実測（B = 4、T = 300、120 反復、5% 水準、棄却率）:
+
+| シナリオ | LR 検定 | 全体シャッフル | **窓内シャッフル** |
+|---|---:|---:|---:|
+| SD なし・ドリフトなし | 6.7% | 5.8% | **4.2%** |
+| SD なし・弱ドリフト | 13.3% | 12.5% | **3.3%** |
+| SD なし・**強ドリフト** | 67.2% | 73.1% | **10.1%** |
+| SD `gamma = 0.8`・ドリフトなし | 96.7% | 97.5% | **95.8%** |
+| SD `gamma = 0.8`・弱ドリフト | 94.1% | 94.1% | **92.4%** |
+
+古典的な 2 つの検定は、ドリフトしているだけの世帯の 3 分の 2 を「状態依存あり」と
+判定します。窓内 null はサイズをほぼ名目通りに保ちつつ、検出力をほとんど落としません。
+両方の p 値を出力しており、**その対比自体が診断になります**:
+
+| `p_global` | `p_window` | 判定 |
+|---|---|---|
+| 小 | 小 | `:state_dependence` |
+| 小 | 大 | `:nonstationarity` — 系列構造はドリフトの尺度にしかない |
+| 大 | 大 | `:no_evidence` |
+
+**どれだけの履歴が要るか。** B = 4、5% 水準で:
+
+| 機会数 | `gamma = 0` のサイズ | `gamma = 0.5` の検出力 | `gamma = 1.0` の検出力 | γ の偏り |
+|---:|---:|---:|---:|---:|
+| 25 | 6.6% | 10.6% | 36.0% | −1.15 |
+| 50 | 5.3% | 25.1% | 72.8% | −0.38 |
+| 100 | 5.8% | 49.5% | 90.5% | −0.31 |
+| 200 | 5.0% | 79.7% | 98.8% | −0.02 |
+| 400 | 3.2% | 95.0% | 99.5% | −0.07 |
+| 1000 | 5.5% | 99.0% | 99.5% | −0.00 |
+
+実用ラインは **約 200 機会**です。偏りの向きがパネル版と**逆**である点に注意してください。
+固定効果＋ラグ従属変数は γ を下方に偏らせ（Nickell）、`1/T` で消えます。50 機会を切ると
+点推定は読む価値がありません（レポートにも警告が出ます）。
+
+数字で埋められない問題が 2 つ。1 カテゴリで 200 機会を超える世帯は極端なヘビーバイヤー
+なので **結果には選択バイアス**がかかります。そして答えるのは「**この世帯**は慣性的か」
+であって「消費者は慣性的か」ではありません。
+
+```julia
+r = DHRTests(one.X[1]; mode = :single, window = 20, nperm = 999)
+r.ci_profile                      # r.ci_wald よりこちらを読む
+r.p_window, r.p_global
+sampling_distribution(r)          # Normal(gamma, se)。LiftBijector と合成できる
+null_distribution(r, :window)     # 並べ替え分布そのもの
+```
 
 ## 区間ではなく分布として取り出す
 

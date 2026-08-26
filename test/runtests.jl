@@ -183,6 +183,91 @@ const FAST = (K = 2, R = 4_000, burnin = 1_500, thin = 2, nchains = 2, verbose =
         @test res.beta_ci[1][1] < 0 < res.beta_ci[1][2]
     end
 
+    @testset "window_shuffle" begin
+        y = rand(Xoshiro(5), 1:4, 200)
+        z = window_shuffle(y, 20, Xoshiro(6))
+        @test length(z) == length(y)
+        @test sort(z) == sort(y)                       # same basket overall
+
+        # local composition is preserved up to the window: counts over a span
+        # much longer than the window barely move
+        cnt(v, lo, hi) = [count(==(b), v[lo:hi]) for b in 1:4]
+        @test sum(abs, cnt(z, 1, 100) - cnt(y, 1, 100)) <= 40
+
+        # a window as long as the series is just a global shuffle
+        @test sort(window_shuffle(y, length(y), Xoshiro(7))) == sort(y)
+        @test_throws ArgumentError window_shuffle(y, 1, Xoshiro(8))
+    end
+
+    @testset "single household mode" begin
+        one = simulate_panel(H = 1, B = 4, T = 400, gamma = 1.0, K = 1, seed = 61)
+        r = DHRTests(one.X[1]; mode = :single, nperm = 199, verbose = false)
+
+        @test r isa DHRSingleResult
+        @test r.n_occasions == 400
+        @test r.n_used == 399
+        @test r.converged
+        @test r.gamma > 0
+        @test r.ci_profile[1] < r.gamma < r.ci_profile[2]
+        @test r.ci_profile[1] > 0
+        @test r.lr > 0 && 0 <= r.lr_pvalue <= 1
+        @test r.p_window < 0.05
+        @test r.verdict === :state_dependence
+        @test length(r.null_window) <= r.nperm
+        # profile and Wald agree in a long history
+        @test abs(r.ci_profile[1] - r.ci_wald[1]) < 0.1
+
+        s = summarize(r)
+        @test s.gamma ≈ r.gamma
+        @test s.verdict === :state_dependence
+
+        sd = sampling_distribution(r)
+        @test sd isa Normal && sd.μ ≈ r.gamma && sd.σ ≈ r.se
+        nw = null_distribution(r, :window)
+        @test nw isa PosteriorSample
+        @test length(draws(nw)) == length(r.null_window)
+        @test null_distribution(r, :global) isa PosteriorSample
+        @test_throws ArgumentError null_distribution(r, :bogus)
+
+        io = IOBuffer(); show(io, MIME"text/plain"(), r)
+        out = String(take!(io))
+        @test occursin("window shuffle", out)
+        @test occursin("profile", out)
+        io = IOBuffer(); show(io, r)
+        @test occursin("DHRSingleResult", String(take!(io)))
+
+        # a zero-order history must not be called state dependent
+        null = simulate_panel(H = 1, B = 4, T = 400, gamma = 0.0, K = 1, seed = 62)
+        rn = DHRTests(null.X[1]; mode = :single, nperm = 199, verbose = false)
+        @test rn.verdict !== :state_dependence
+        @test rn.ci_profile[1] < 0 < rn.ci_profile[2]
+
+        # drifting tastes without state dependence: the window null must not
+        # call it state dependence even though the raw repeat rate is high
+        dr = simulate_panel(H = 1, B = 4, T = 400, gamma = 0.0, K = 1,
+                            drift_sd = 0.15, seed = 63)
+        rd = DHRTests(dr.X[1]; mode = :single, nperm = 199, window = 20,
+                      verbose = false)
+        @test rd.verdict in (:nonstationarity, :no_evidence)
+        # the mechanism: a window shuffle keeps the drift-induced clustering, so
+        # its null sits above the global-shuffle null, and the observed estimate
+        # is judged against the higher bar
+        @test mean(rd.null_window) > mean(rd.null_global)
+
+        # input handling
+        @test DHRTests(one.X; mode = :single, nperm = 99, verbose = false) isa
+              DHRSingleResult
+        @test_throws ArgumentError DHRTests(simulate_panel(H = 3, B = 3, T = 50).X;
+                                            mode = :single, verbose = false)
+        @test_throws ArgumentError DHRTests(one.X[1]; mode = :bogus, verbose = false)
+        @test_throws ArgumentError DHRTests(one.X[1]; mode = :single, window = 5_000,
+                                            verbose = false)
+        @test_throws ArgumentError DHRTests(one.X[1]; mode = :single, nperm = 5,
+                                            verbose = false)
+        onebrand = reshape(repeat([1.0, 0.0, 0.0], 40), 3, 40)
+        @test_throws ArgumentError DHRTests(onebrand; mode = :single, verbose = false)
+    end
+
     @testset "posterior as a Distribution" begin
         sim = simulate_panel(H = 150, B = 4, T = 12, gamma = 0.8, seed = 41)
         res = DHRTests(sim.X; K = 1, R = 3_000, burnin = 1_000, thin = 2,

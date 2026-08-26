@@ -22,6 +22,10 @@ Keyword arguments
   integer in `1:max_quantity`.
 - `zero_column_prob` : probability that an extra all-zero (no purchase) column
   is inserted, to exercise the column handling in [`build_panel`](@ref).
+- `drift_sd` : if positive, each household's intercepts follow a random walk with
+  this step standard deviation, so tastes move over time. Drift produces runs
+  that look like state dependence; it is the confound `mode = :single` has to
+  defend against, and this is how to generate a panel that tests that defence.
 - `warmup` : occasions simulated and discarded before recording, so that the
   recorded sequence starts from the stationary distribution of the choice
   process.
@@ -45,6 +49,7 @@ function simulate_panel(; H::Int = 300,
                           quantity::Symbol = :unit,
                           max_quantity::Int = 3,
                           zero_column_prob::Real = 0.0,
+                          drift_sd::Real = 0.0,
                           warmup::Int = 20,
                           seed::Integer = 1)
 
@@ -81,9 +86,11 @@ function simulate_panel(; H::Int = 300,
         Th   = Tvec[h]
         last = 0
         seq  = Vector{Int}(undef, Th)
+        a_t  = alpha[:, h]
         for t in 1:(warmup + Th)
+            drift_sd > 0 && (a_t .+= drift_sd .* randn(rng, p))
             for j in 1:B
-                v[j] = (j < B ? alpha[j, h] : 0.0) + (j == last ? g : 0.0)
+                v[j] = (j < B ? a_t[j] : 0.0) + (j == last ? g : 0.0)
             end
             m = maximum(v)
             s = 0.0

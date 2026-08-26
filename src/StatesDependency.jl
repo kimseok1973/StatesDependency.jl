@@ -27,13 +27,14 @@ using Printf
 using Distributions
 using InverseFunctions
 
-export DHRTests, DHRTestResult
+export DHRTests, DHRTestResult, DHRSingleResult
 export PurchasePanel, build_panel, shuffle_panel, lagged_repeat_rate
 export n_households, n_occasions, n_used, n_covariates
 export simulate_panel, dummy_data
 export fit_hbmnl, HBMNLFit
 export split_rhat, ess
 export summarize, gamma_draws
+export window_shuffle, sampling_distribution, null_distribution
 export posterior, PosteriorSample, effective_size, draws, lift_share
 export LiftBijector, InverseLiftBijector, lift_distribution, lift_logabsdetjac
 
@@ -44,5 +45,6 @@ include("hbmnl.jl")
 include("simulate.jl")
 include("dhrtests.jl")
 include("posterior.jl")
+include("single.jl")
 
 end # module

@@ -128,6 +128,24 @@ statistic. The verdict requires that interval to exclude zero.
 | `seed` | `20260826` | RNG seed |
 | `verbose` | `true` | progress output |
 
+# One long history instead of a panel: `mode = :single`
+
+`DHRTests(X; mode = :single)` takes a **single** `B x T` matrix and runs a
+completely different estimator: a fixed-effect conditional logit, a
+likelihood-ratio test with a profile interval, and a permutation null that
+shuffles occasions **inside short windows**. It returns a
+[`DHRSingleResult`](@ref).
+
+With one household there is no cross-sectional heterogeneity left to confound
+the lagged-choice effect. What replaces it is the household's own drift over
+time, which a global order shuffle cannot separate from inertia -- hence the
+window null. `window` (occasions per window, default `clamp(T/8, 8, 25)`) and
+`nperm` (default 499) control it.
+
+Rough guide to how long the history has to be (B = 4, 5% level): about 200
+occasions for 80% power at `gamma = 0.5`, about 100 for `gamma = 1.0`. Below 50
+the estimate is badly biased downwards and the test has almost no power.
+
 # Example
 
 ```julia
@@ -137,6 +155,10 @@ sim = simulate_panel(H = 400, B = 4, T = 12, gamma = 0.8, seed = 1)
 res = DHRTests(sim.X)          # prints a full report
 res.gamma_ci                   # (0.61, 0.99)
 res.verdict                    # :state_dependence
+
+# one household with a long history
+one = simulate_panel(H = 1, B = 4, T = 400, gamma = 0.8, seed = 2)
+DHRTests(one.X[1]; mode = :single)
 ```
 """
 function DHRTests(X;
@@ -154,12 +176,31 @@ function DHRTests(X;
                   min_occasions::Int = 2,
                   seed::Integer = 20260826,
                   verbose::Bool = true,
+                  mode::Symbol = :panel,
+                  window::Union{Nothing,Int} = nothing,
+                  nperm::Int = 499,
                   kwargs...)
 
     0 < level < 1 || throw(ArgumentError("level must be in (0,1)"))
+    mode in (:panel, :single) ||
+        throw(ArgumentError("mode must be :panel or :single, got :$mode"))
 
-    panel = X isa PurchasePanel ? X :
-            build_panel(X; brand_names, covariates, tie_rule, min_occasions)
+    # In :single mode a bare B x T matrix is exactly what is expected, so the
+    # "treated as ONE household" warning would be noise.
+    Xin = (mode === :single && X isa AbstractMatrix) ? [X] : X
+
+    panel = Xin isa PurchasePanel ? Xin :
+            build_panel(Xin; brand_names, covariates, tie_rule, min_occasions)
+
+    if mode === :single
+        covariates === nothing || throw(ArgumentError(
+            "covariates are not supported in :single mode yet"))
+        if verbose
+            @printf("DHRTests (single household): %d brands, %d occasions (%d used)\n",
+                    panel.B, n_occasions(panel), n_used(panel))
+        end
+        return _dhr_single(panel; level, window, nperm, seed, verbose)
+    end
 
     if verbose
         @printf("DHRTests: %d households, %d brands, %d occasions (%d used)\n",
