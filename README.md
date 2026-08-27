@@ -332,7 +332,21 @@ lift_distribution(res, 0.25)      # probability lift for a 25%-share brand (need
 
 Every reported quantity is also available as a `Distribution`, so you can sample
 from it and carry the uncertainty downstream instead of re-deriving it from a
-point estimate and an interval.
+point estimate and an interval. **Which function you call depends on which
+result you have** — the two modes estimate different things, so they hand back
+different objects:
+
+| result | function | what it is |
+|---|---|---|
+| `DHRTestResult` (panel) | `posterior(res, :gamma)` | a genuine posterior, the MCMC draws |
+| `DHRSingleResult` (`mode = :single`) | `sampling_distribution(r)` | `Normal(gamma, se)`, the asymptotic sampling distribution |
+| `DHRSingleResult` | `null_distribution(r, :window)` | the permutation null, as draws |
+
+`posterior` is not defined for a `DHRSingleResult` (it would be a lie — there is
+no posterior there, the single-household estimator is maximum likelihood), and
+`sampling_distribution` is not defined for a `DHRTestResult`.
+
+### From a panel result
 
 ```julia
 using Distributions
@@ -376,6 +390,45 @@ near 570. Resampling 10,000 values from it does not give 10,000 independent
 samples — it is fine for propagating uncertainty, but do not quote it as a
 sample size.
 
+### From a single-household result
+
+`mode = :single` is maximum likelihood, not MCMC, so what comes back is the
+asymptotic sampling distribution of the estimate:
+
+```julia
+r = DHRTests(y; mode = :single, nperm = 999)
+
+d = sampling_distribution(r)             # Normal(0.1098, 0.2850)
+rand(d, 10_000)
+quantile(d, 0.025), quantile(d, 0.975)   # (-0.449, 0.668)
+ccdf(d, 0.0)                             # P(gamma > 0) = 0.65
+logpdf(d, 0.0)                           # analytic, cheap enough for a sampler
+```
+
+**It is a sampling distribution, not a posterior**, and it is symmetric by
+construction. Check it against `r.ci_profile` before leaning on the tails — in
+the example above the profile interval is `[-0.461, 0.664]` against the Wald
+`[-0.449, 0.668]`, so nothing is lost, but that is not guaranteed in a short
+history.
+
+The permutation nulls come back as `PosteriorSample`, the same empirical type
+the panel mode uses:
+
+```julia
+nw = null_distribution(r, :window)   # PosteriorSample(:null_window, n=999, mean=-0.173, 95%=[-0.713, 0.350])
+ng = null_distribution(r, :global)   # PosteriorSample(:null_global, n=999, mean=-0.051, 95%=[-0.713, 0.508])
+
+rand(nw, 1000)
+r.null_window                        # the raw Vector{Float64}, if you prefer
+```
+
+Derived quantities are easiest by transforming draws:
+
+```julia
+or = exp.(rand(sampling_distribution(r), 100_000))     # odds ratio
+mean(or), quantile(or, [0.025, 0.975])                 # 1.162, [0.638, 1.944]
+```
+
 ### With Bijectors.jl
 
 Bijectors is a **weak dependency**: the core package stays on `Distributions`
@@ -404,6 +457,10 @@ d = lift_distribution(res, 0.25)          # == transformed(fit(Normal, γ), b)
 rand(d, 1000)                             # lift in probability units
 logpdf(d, 0.10)
 ```
+
+The same works from a single-household result — `sampling_distribution(r)` is an
+ordinary `Normal`, so `transformed(sampling_distribution(r), LiftBijector(0.30))`
+composes just as well.
 
 `LiftBijector` is a plain callable in the core package and implements
 `InverseFunctions.inverse`, so it also composes outside the Bijectors ecosystem.
@@ -673,7 +730,21 @@ null_distribution(r, :window)     # 並べ替え分布そのもの
 ## 区間ではなく分布として取り出す
 
 報告される量はすべて `Distribution` として取り出せます。点推定と区間から組み直す
-のではなく、そのまま `rand` して下流に不確実性を流せます。
+のではなく、そのまま `rand` して下流に不確実性を流せます。ただし
+**どちらのモードの結果かで呼ぶ関数が変わります**。2 つのモードは別のものを推定して
+いるので、返ってくるオブジェクトも別です。
+
+| 結果 | 関数 | 中身 |
+|---|---|---|
+| `DHRTestResult`（パネル） | `posterior(res, :gamma)` | 本物の事後分布（MCMC draw） |
+| `DHRSingleResult`（`mode = :single`） | `sampling_distribution(r)` | `Normal(γ̂, se)`。漸近的な標本分布 |
+| `DHRSingleResult` | `null_distribution(r, :window)` | 並べ替え null（draw） |
+
+`posterior` は `DHRSingleResult` には定義していません（単一世帯側は最尤法で、
+そこに事後分布は存在しないため）。逆に `sampling_distribution` は
+`DHRTestResult` には使えません。
+
+### パネルの結果から
 
 ```julia
 using Distributions
@@ -715,6 +786,41 @@ ln = fit(LogNormal, posterior(res, :odds_ratio))
 10,000 個 `rand` しても独立サンプル 10,000 個にはなりません（不確実性の伝播には十分ですが、
 サンプルサイズとして引用しないでください）。
 
+### 単一世帯の結果から
+
+`mode = :single` は MCMC ではなく最尤法なので、返るのは推定量の**漸近的な標本分布**です。
+
+```julia
+r = DHRTests(y; mode = :single, nperm = 999)
+
+d = sampling_distribution(r)             # Normal(0.1098, 0.2850)
+rand(d, 10_000)
+quantile(d, 0.025), quantile(d, 0.975)   # (-0.449, 0.668)
+ccdf(d, 0.0)                             # P(γ > 0) = 0.65
+logpdf(d, 0.0)                           # 解析的。サンプラーの中でも使える
+```
+
+**事後分布ではなく標本分布**で、定義上左右対称です。尾を使う前に `r.ci_profile` と
+突き合わせてください。上の例ではプロファイル区間 `[-0.461, 0.664]` に対して Wald が
+`[-0.449, 0.668]` なので実害はありませんが、短い履歴では一致する保証はありません。
+
+並べ替え null は `PosteriorSample`（パネル側と同じ経験分布の型）で返ります。
+
+```julia
+nw = null_distribution(r, :window)   # PosteriorSample(:null_window, n=999, mean=-0.173, 95%=[-0.713, 0.350])
+ng = null_distribution(r, :global)   # PosteriorSample(:null_global, n=999, mean=-0.051, 95%=[-0.713, 0.508])
+
+rand(nw, 1000)
+r.null_window                        # 生の Vector{Float64} が欲しいならこちら
+```
+
+派生量は draw を変換するのが簡単です。
+
+```julia
+or = exp.(rand(sampling_distribution(r), 100_000))     # オッズ比
+mean(or), quantile(or, [0.025, 0.975])                 # 1.162, [0.638, 1.944]
+```
+
 ### Bijectors.jl を使う
 
 Bijectors は **weak dependency** です。コアは `Distributions` だけのまま、
@@ -742,6 +848,9 @@ d = lift_distribution(res, 0.25)          # == transformed(fit(Normal, γ), b)
 rand(d, 1000)                             # 確率単位のリフト
 logpdf(d, 0.10)
 ```
+
+単一世帯の結果でも同じです。`sampling_distribution(r)` はただの `Normal` なので、
+`transformed(sampling_distribution(r), LiftBijector(0.30))` がそのまま通ります。
 
 `LiftBijector` はコア側では単なる callable で、`InverseFunctions.inverse` を実装
 しているので Bijectors の外でも合成できます。全ブランドのシェア加重合計には閉じた
