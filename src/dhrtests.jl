@@ -156,6 +156,14 @@ time, which a global order shuffle cannot separate from inertia -- hence the
 window null. `window` (occasions per window, default `clamp(T/8, 8, 25)`) and
 `nperm` (default 499) control it.
 
+The window null *assumes* tastes are constant inside a window. `:single` mode
+also checks that assumption, with a stationarity pre-test on brand shares across
+`n_blocks` stretches of the sequence (default `clamp(T/50, 2, 6)`) -- see
+[`stationarity_test`](@ref). If it rejects, the verdict is `:nonstationarity`
+whatever the window null says, because a moving alpha is exactly the case the
+window null cannot handle. This is the two-stage procedure of Bass, Givon,
+Kalwani, Reibstein & Wright (1984): stationarity first, order second.
+
 Rough guide to how long the history has to be (B = 4, 5% level): about 200
 occasions for 80% power at `gamma = 0.5`, about 100 for `gamma = 1.0`. Below 50
 the estimate is badly biased downwards and the test has almost no power.
@@ -194,6 +202,7 @@ function DHRTests(X;
                   mode::Symbol = :panel,
                   window::Union{Nothing,Int} = nothing,
                   nperm::Int = 499,
+                  n_blocks::Union{Nothing,Int} = nothing,
                   kwargs...)
 
     0 < level < 1 || throw(ArgumentError("level must be in (0,1)"))
@@ -215,7 +224,7 @@ function DHRTests(X;
             @printf("DHRTests (single household): %d brands, %d occasions (%d used)\n",
                     panel.B, n_occasions(panel), n_used(panel))
         end
-        return _dhr_single(panel; level, window, nperm, seed, verbose)
+        return _dhr_single(panel; level, window, nperm, n_blocks, seed, verbose)
     end
 
     if verbose

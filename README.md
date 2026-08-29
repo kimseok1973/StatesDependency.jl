@@ -182,6 +182,71 @@ p-values are reported, and the contrast between them is itself the diagnostic:
 | small | large | `:nonstationarity` — serial structure at the drift scale only |
 | large | large | `:no_evidence` |
 
+### Checking the assumption instead of making it: `p_stationarity`
+
+The window null *assumes* tastes are constant inside a window. It does not check
+it, and when tastes move faster than the window it fails badly — with tastes
+stepping to a new phase every 10 occasions, the window null calls 98% of
+`gamma = 0` households state dependent, and no choice of window length fixes it.
+
+So `:single` mode now runs a **stationarity pre-test first**, following Bass,
+Givon, Kalwani, Reibstein & Wright (1984): test stationarity, and test the order
+of the process only on what passes. A runs-type statistic cannot tell drifting
+tastes from inertia — both shorten the runs — so it is the *order* of the two
+tests that does the work.
+
+The statistic that separates them is the **marginal distribution**. With `alpha`
+fixed the chain is stationary whatever `gamma` is, so brand shares are the same
+in every stretch of the sequence; if `alpha` moves, they move. That is the only
+observable difference between the two.
+
+- **statistic** — Pearson chi-square for homogeneity of brand shares across
+  contiguous blocks of the sequence.
+- **null** — *not* the chi-square distribution. State dependence correlates the
+  occasions inside a block, so the asymptotic reference over-rejects whenever
+  `gamma > 0`. Instead the null is a parametric bootstrap from the fitted model
+  itself: `alpha` constant, `gamma` at its estimate.
+
+| `gamma`, `alpha` genuinely constant | bootstrap null | asymptotic chi-square |
+|---:|---:|---:|
+| 0.0 | 6.0% | 6.0% |
+| 0.8 | 7.0% | **31.0%** |
+| 1.5 | 5.0% | **63.5%** |
+
+*(T = 400, B = 4, 200 replications, 5% level. Both columns should read 5%.)*
+
+Power depends on matching the block length to the speed of the change, and the
+two ends are nearly blind to each other — so several scales are scanned
+(`[3, 6, 12, 24]` blocks by default) and the smallest p-value is calibrated
+against the same bootstrap draws. The size holds at every scale, so the scan
+costs nothing.
+
+What the gate buys, end to end (T = 400, W = 20, 60 replications, share of
+households called `:state_dependence`):
+
+| truth | window null alone | **with the pre-test** |
+|---|---:|---:|
+| `gamma = 0`, tastes step every 40 occasions | 18.3% | **0.0%** |
+| `gamma = 0`, tastes step every 10 occasions | 98.3% | **5.0%** |
+| `gamma = 0`, random-walk drift `sd = 0.10` | 10.0% | **0.0%** |
+| `gamma = 0.8`, `alpha` constant | 91.7% | **90.0%** |
+| `gamma = 0.5`, `alpha` constant | 81.7% | **75.0%** |
+
+A rejection makes the verdict `:nonstationarity` whatever `p_window` says,
+because a moving `alpha` is exactly the case the window null cannot handle. Read
+that verdict as *"`gamma` is not identified for this household"*, not as
+*"there is no state dependence"* — the pre-test protects the conclusion, it does
+not recover the estimate.
+
+```julia
+r = DHRTests(y; mode = :single)
+r.p_stationarity                 # small => tastes moved, gamma not identified
+r.n_blocks, r.p_blocks           # which time scale it broke on
+
+stationarity_test(y)             # standalone, same test
+stationarity_test(y; n_blocks = 12)
+```
+
 **How long does the history have to be?** With B = 4, at the 5% level:
 
 | occasions | size at `gamma = 0` | power at `gamma = 0.5` | power at `gamma = 1.0` | bias in `gamma` |
@@ -222,6 +287,7 @@ null_distribution(r, :window)     # the permutation distribution itself
 | `choice_matrix(p, h)` | the `B × T` indicator matrix a sequence was read as |
 | `shuffle_panel(p, rng)` | the order-shuffled placebo panel |
 | `window_shuffle(y, w, rng)` | the within-window order null for one sequence |
+| `stationarity_test(y)` | is this household's `alpha` constant? run before trusting `p_window` |
 | `sampling_distribution(r)` | `Normal(gamma, se)` for a single-household result |
 | `null_distribution(r, :window)` | the permutation distribution of `gamma` |
 | `lagged_repeat_rate(p)` | descriptive repeat share |
@@ -341,6 +407,7 @@ different objects:
 | `DHRTestResult` (panel) | `posterior(res, :gamma)` | a genuine posterior, the MCMC draws |
 | `DHRSingleResult` (`mode = :single`) | `sampling_distribution(r)` | `Normal(gamma, se)`, the asymptotic sampling distribution |
 | `DHRSingleResult` | `null_distribution(r, :window)` | the permutation null, as draws |
+| `DHRSingleResult` | `null_distribution(r, :stationarity)` | the bootstrap null of the block chi-square |
 
 `posterior` is not defined for a `DHRSingleResult` (it would be a lie — there is
 no posterior there, the single-household estimator is maximum likelihood), and
@@ -700,6 +767,67 @@ Newton 法で当て、尤度比で `gamma = 0` を検定し、**プロファイ�
 | 小 | 大 | `:nonstationarity` — 系列構造はドリフトの尺度にしかない |
 | 大 | 大 | `:no_evidence` |
 
+### 仮定を置くのではなく検定する: `p_stationarity`
+
+窓内 null は「窓の中で嗜好は一定」を**仮定**しています。検定はしていません。
+そして嗜好が窓より速く動くと大きく破綻します。10 機会ごとに嗜好が切り替わる世帯では、
+`gamma = 0` にもかかわらず窓内 null が 98% を「状態依存あり」と判定し、
+**窓長をどう選んでも直りません**。
+
+そこで `:single` モードは**定常性の事前検定**を先に走らせます。Bass, Givon, Kalwani,
+Reibstein & Wright (1984) の手続き ── まず定常性を検定し、通った系列についてのみ
+次数を検定する ── に従います。ランズ型の統計量は嗜好変化と慣性を区別できません
+（どちらもランを短くする）。効いているのは**2 つの検定の順序**であって、個々の検定
+ではありません。
+
+両者を分ける観測量は**周辺分布**です。α が固定なら `gamma` がいくつであろうと連鎖は
+定常なので、系列のどの区間を取ってもブランドシェアは同じになります。α が動けば動く。
+**これが両者の唯一の観測可能な差**です。
+
+- **統計量** ── 系列を連続したブロックに分け、ブロック間のブランドシェアの均質性を
+  見る Pearson カイ二乗。
+- **帰無分布** ── カイ二乗分布では**ありません**。状態依存はブロック内の機会を相関
+  させるので、`gamma > 0` だと漸近分布は過剰棄却します。代わりに、推定済みモデル
+  自体からのパラメトリックブートストラップ（α 一定、`gamma` は推定値）を使います。
+
+| α は本当に一定、`gamma` = | ブートストラップ null | 漸近カイ二乗 |
+|---:|---:|---:|
+| 0.0 | 6.0% | 6.0% |
+| 0.8 | 7.0% | **31.0%** |
+| 1.5 | 5.0% | **63.5%** |
+
+*(T = 400、B = 4、200 反復、5% 水準。どちらの列も 5% になるべき場面です。)*
+
+検出力はブロック長を嗜好変化の速さに合わせられるかで決まり、**速い変化と遅い変化は
+互いにほぼ盲目**です。そこで複数の尺度（既定は `[3, 6, 12, 24]` ブロック）を走査し、
+最小 p 値を同じブートストラップ標本で較正します。サイズはどの尺度でも保たれるので、
+走査のコストはありません。
+
+ゲートの効果（T = 400、W = 20、60 反復、`:state_dependence` と判定された割合）:
+
+| 真の姿 | 窓内 null のみ | **事前検定あり** |
+|---|---:|---:|
+| `gamma = 0`、40 機会ごとに嗜好が切替 | 18.3% | **0.0%** |
+| `gamma = 0`、10 機会ごとに嗜好が切替 | 98.3% | **5.0%** |
+| `gamma = 0`、ランダムウォーク `sd = 0.10` | 10.0% | **0.0%** |
+| `gamma = 0.8`、α 一定 | 91.7% | **90.0%** |
+| `gamma = 0.5`、α 一定 | 81.7% | **75.0%** |
+
+棄却されたら、`p_window` が何を言おうと判定は `:nonstationarity` になります。
+α が動いている状況こそ窓内 null が扱えない場面だからです。この判定は
+**「この世帯では `gamma` が識別されていない」**と読んでください。
+**「状態依存がない」ではありません** ── 事前検定は結論を守るだけで、推定値を
+救ってはくれません。
+
+```julia
+r = DHRTests(y; mode = :single)
+r.p_stationarity                 # 小さい => 嗜好が動いている。γ は識別されていない
+r.n_blocks, r.p_blocks           # どの時間尺度で崩れたか
+
+stationarity_test(y)             # 単独でも呼べる
+stationarity_test(y; n_blocks = 12)
+```
+
 **どれだけの履歴が要るか。** B = 4、5% 水準で:
 
 | 機会数 | `gamma = 0` のサイズ | `gamma = 0.5` の検出力 | `gamma = 1.0` の検出力 | γ の偏り |
@@ -739,6 +867,7 @@ null_distribution(r, :window)     # 並べ替え分布そのもの
 | `DHRTestResult`（パネル） | `posterior(res, :gamma)` | 本物の事後分布（MCMC draw） |
 | `DHRSingleResult`（`mode = :single`） | `sampling_distribution(r)` | `Normal(γ̂, se)`。漸近的な標本分布 |
 | `DHRSingleResult` | `null_distribution(r, :window)` | 並べ替え null（draw） |
+| `DHRSingleResult` | `null_distribution(r, :stationarity)` | 定常性検定のブートストラップ null |
 
 `posterior` は `DHRSingleResult` には定義していません（単一世帯側は最尤法で、
 そこに事後分布は存在しないため）。逆に `sampling_distribution` は

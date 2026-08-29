@@ -308,8 +308,20 @@ const FAST = (K = 2, R = 4_000, burnin = 1_500, thin = 2, nchains = 2, verbose =
         out = String(take!(io))
         @test occursin("window shuffle", out)
         @test occursin("profile", out)
+        @test occursin("stationarity of alpha", out)
         io = IOBuffer(); show(io, r)
         @test occursin("DHRSingleResult", String(take!(io)))
+
+        # the stationarity pre-test: alpha really is constant here, so it must
+        # not fire and must not steal the verdict
+        @test isfinite(r.p_stationarity)
+        @test r.p_stationarity > 0.05
+        @test length(r.n_blocks) == length(r.p_blocks) == length(r.chisq_blocks)
+        @test all(>=(2), r.n_blocks)
+        @test all(x -> 0 < x <= 1, r.p_blocks)
+        @test all(>=(0), r.chisq_blocks)
+        @test s.p_stationarity ≈ r.p_stationarity
+        @test null_distribution(r, :stationarity) isa PosteriorSample
 
         # a zero-order history must not be called state dependent
         null = simulate_panel(H = 1, B = 4, T = 400, gamma = 0.0, K = 1, seed = 62)
@@ -328,6 +340,9 @@ const FAST = (K = 2, R = 4_000, burnin = 1_500, thin = 2, nchains = 2, verbose =
         # its null sits above the global-shuffle null, and the observed estimate
         # is judged against the higher bar
         @test mean(rd.null_window) > mean(rd.null_global)
+        # and the stationarity pre-test sees the moving alpha directly
+        @test rd.p_stationarity < 0.05
+        @test rd.verdict === :nonstationarity
 
         # input handling
         @test DHRTests(one.X; mode = :single, nperm = 99, verbose = false) isa
@@ -341,6 +356,40 @@ const FAST = (K = 2, R = 4_000, burnin = 1_500, thin = 2, nchains = 2, verbose =
                                             verbose = false)
         onebrand = reshape(repeat([1.0, 0.0, 0.0], 40), 3, 40)
         @test_throws ArgumentError DHRTests(onebrand; mode = :single, verbose = false)
+    end
+
+    @testset "stationarity test" begin
+        # standalone entry point, on a household whose tastes really do move
+        dr = simulate_panel(H = 1, B = 4, T = 400, gamma = 0.0, K = 1,
+                            drift_sd = 0.2, seed = 71)
+        st = stationarity_test(dr.X[1]; nboot = 199)
+        @test st.pvalue < 0.05
+        @test st.n_blocks == [3, 6, 12, 24]
+        @test length(st.statistic) == length(st.p_blocks) == 4
+        @test length(st.null) == 199
+        @test isfinite(st.gamma)
+
+        # alpha constant with strong state dependence: this is the case an
+        # asymptotic chi-square gets wrong, because occasions inside a block are
+        # correlated. The bootstrap null must not reject.
+        sd = simulate_panel(H = 1, B = 4, T = 400, gamma = 1.5, K = 1, seed = 72)
+        @test stationarity_test(sd.X[1]; nboot = 199).pvalue > 0.05
+
+        # a fixed grid is honoured, and accepts a scalar or a collection
+        @test stationarity_test(sd.X[1]; n_blocks = 4, nboot = 99).n_blocks == [4]
+        @test stationarity_test(sd.X[1]; n_blocks = [2, 5], nboot = 99).n_blocks == [2, 5]
+
+        # sequence input, same as everywhere else in the package
+        @test stationarity_test(vec(mapslices(argmax, sd.X[1]; dims = 1));
+                                nboot = 99).pvalue isa Float64
+
+        # short histories cannot be blocked at the default grid
+        short = simulate_panel(H = 1, B = 3, T = 40, gamma = 0.0, K = 1, seed = 73)
+        @test length(stationarity_test(short.X[1]; nboot = 99).n_blocks) <= 2
+
+        @test_throws ArgumentError stationarity_test(sd.X[1]; nboot = 5)
+        @test_throws ArgumentError stationarity_test(simulate_panel(H = 3, B = 3,
+                                                                    T = 50).X)
     end
 
     @testset "posterior as a Distribution" begin
