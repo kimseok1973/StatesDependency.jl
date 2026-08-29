@@ -178,7 +178,10 @@ Keyword arguments
 - `R`, `burnin`, `thin` : total sweeps, discarded sweeps, thinning.
 - `nchains` : independent chains (used for the split-Rhat diagnostic).
 - `sd` : include the state-dependence term. `false` fits the nested no-SD model.
-- `dir_prior`, `kappa0`, `nu0_add`, `gamma_prior_sd` : hyperparameters. The
+- `gamma_prior_sd` : prior SD of the normal on `gamma` **and on every element
+  of `beta`** -- one knob covers both, so widen it if a covariate is on a
+  scale where 10 is tight.
+- `dir_prior`, `kappa0`, `nu0_add` : hyperparameters. The
   defaults follow Dube, Hitsch & Rossi (2010): `Dir(0.5/K)`, `mu_k | Sigma_k ~
   N(0, 16 Sigma_k)`, `Sigma_k ~ IW(p+3, (p+3) I)`.
 """

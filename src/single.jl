@@ -446,7 +446,6 @@ function _profile_ci(X, yy, Bu, P, T, th, llhat, level)
         _, l0, _, _ = _single_newton(X, yy, Bu, P, T; free = 1:(P-1), th0 = t0)
         return 2 * (llhat - l0) - crit
     end
-    se = 1.0
     lo = _bisect_side(prof, ghat, -1.0)
     hi = _bisect_side(prof, ghat, +1.0)
     return (lo, hi)
@@ -476,7 +475,7 @@ end
 
 function _dhr_single(panel::PurchasePanel;
                      level::Real, window::Union{Nothing,Int}, nperm::Int,
-                     n_blocks::Union{Nothing,Int}, seed::Integer, verbose::Bool)
+                     n_blocks, seed::Integer, verbose::Bool)
 
     n_households(panel) == 1 || throw(ArgumentError(
         "mode = :single expects exactly one household, got $(n_households(panel)). " *
@@ -698,9 +697,11 @@ The permutation distribution of `gamma` under the window (`:window`) or global
 (`:global`) order null, as a [`PosteriorSample`](@ref) so it can be sampled and
 plotted like the other distributions in this package.
 
-`:stationarity` gives the bootstrap distribution of the block chi-square
-statistic instead -- note that this one is a distribution of the test statistic,
-not of `gamma`.
+`:stationarity` gives the bootstrap null of the stationarity pre-test instead.
+Note that this one is not a distribution of `gamma`: with a single block scale it
+holds the block chi-square statistic, and with the default multi-scale grid it
+holds the combined min-p statistic, so its values lie in `(0, 1]` and *small* is
+extreme. Compare it against `r.p_stationarity`, not against `r.gamma`.
 """
 function null_distribution(r::DHRSingleResult, which::Symbol = :window)
     which === :window && return PosteriorSample(r.null_window, :null_window;

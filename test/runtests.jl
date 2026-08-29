@@ -275,7 +275,13 @@ const FAST = (K = 2, R = 4_000, burnin = 1_500, thin = 2, nchains = 2, verbose =
     end
 
     @testset "single household mode" begin
-        one = simulate_panel(H = 1, B = 4, T = 400, gamma = 1.0, K = 1, seed = 61)
+        # The stationarity pre-test rejects 5% of the time by construction, so a
+        # sequence whose p_stationarity lands near 0.05 makes the verdict a
+        # coin flip -- and the coin is flipped by the RNG stream, which is NOT
+        # stable across Julia versions. Seed 61 gave p_stationarity = 0.055 on
+        # Julia 1.10 and 0.040 on 1.11: identical data, opposite verdicts.
+        # Seed 126 sits at ~0.93 on both, far from the boundary.
+        one = simulate_panel(H = 1, B = 4, T = 400, gamma = 1.0, K = 1, seed = 126)
         r = DHRTests(one.X[1]; mode = :single, nperm = 199, verbose = false)
 
         @test r isa DHRSingleResult
@@ -287,6 +293,9 @@ const FAST = (K = 2, R = 4_000, burnin = 1_500, thin = 2, nchains = 2, verbose =
         @test r.ci_profile[1] > 0
         @test r.lr > 0 && 0 <= r.lr_pvalue <= 1
         @test r.p_window < 0.05
+        # assert the gate is open BEFORE the verdict, so that if this ever goes
+        # marginal again the failure names the cause instead of the symptom
+        @test r.p_stationarity > 0.2
         @test r.verdict === :state_dependence
         @test length(r.null_window) <= r.nperm
         # profile and Wald agree in a long history
@@ -378,6 +387,13 @@ const FAST = (K = 2, R = 4_000, burnin = 1_500, thin = 2, nchains = 2, verbose =
         # a fixed grid is honoured, and accepts a scalar or a collection
         @test stationarity_test(sd.X[1]; n_blocks = 4, nboot = 99).n_blocks == [4]
         @test stationarity_test(sd.X[1]; n_blocks = [2, 5], nboot = 99).n_blocks == [2, 5]
+
+        # DHRTests must accept the same forms -- it used to be typed
+        # Union{Nothing,Int} and threw a TypeError on a grid
+        @test DHRTests(sd.X[1]; mode = :single, n_blocks = 4, nperm = 99,
+                       verbose = false).n_blocks == [4]
+        @test DHRTests(sd.X[1]; mode = :single, n_blocks = [2, 5], nperm = 99,
+                       verbose = false).n_blocks == [2, 5]
 
         # sequence input, same as everywhere else in the package
         @test stationarity_test(vec(mapslices(argmax, sd.X[1]; dims = 1));

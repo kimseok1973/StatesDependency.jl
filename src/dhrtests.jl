@@ -158,7 +158,8 @@ window null. `window` (occasions per window, default `clamp(T/8, 8, 25)`) and
 
 The window null *assumes* tastes are constant inside a window. `:single` mode
 also checks that assumption, with a stationarity pre-test on brand shares across
-`n_blocks` stretches of the sequence (default `clamp(T/50, 2, 6)`) -- see
+`n_blocks` stretches of the sequence, at several block scales at once
+(default `[3, 6, 12, 24]`, trimmed to those giving blocks of 15+ occasions) -- see
 [`stationarity_test`](@ref). If it rejects, the verdict is `:nonstationarity`
 whatever the window null says, because a moving alpha is exactly the case the
 window null cannot handle. This is the two-stage procedure of Bass, Givon,
@@ -202,7 +203,7 @@ function DHRTests(X;
                   mode::Symbol = :panel,
                   window::Union{Nothing,Int} = nothing,
                   nperm::Int = 499,
-                  n_blocks::Union{Nothing,Int} = nothing,
+                  n_blocks = nothing,   # nothing | Integer | iterable of Integer
                   kwargs...)
 
     0 < level < 1 || throw(ArgumentError("level must be in (0,1)"))
