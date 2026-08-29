@@ -13,6 +13,12 @@ household bought, as labels, a `CategoricalVector`, or integer codes. One call
 returns the state-dependence coefficient with a credible interval, an
 order-shuffled placebo, and a verdict.
 
+There is also a mode for **one household with a long history**
+([`mode = :single`](#one-long-history-instead-of-a-panel-mode--single)) — a
+fixed-effect conditional logit with a within-window permutation null, and a
+[stationarity pre-test](#checking-the-assumption-instead-of-making-it-p_stationarity)
+that refuses to call a household inertial when its tastes are simply moving.
+
 ```julia
 using StatesDependency
 
@@ -146,6 +152,36 @@ one = simulate_panel(H = 1, B = 4, T = 400, gamma = 0.8, seed = 2)
 DHRTests(one.X[1]; mode = :single)
 ```
 
+```
+State dependence in a single purchase history
+====================================================================
+history      : 400 occasions (399 used), 4 of 4 brands bought
+raw repeat   : 0.393 of consecutive occasions repeat the brand
+model        : fixed-effect conditional logit (no heterogeneity to
+               confound: alpha is a constant for one household)
+--------------------------------------------------------------------
+gamma                        0.625   se 0.104
+  Wald    95% CI          [  0.422,   0.828] *
+  profile 95% CI          [  0.420,   0.827] *   <- prefer this one
+  odds ratio exp(gamma)      1.868   [  1.522,   2.286]
+  LR vs gamma=0              34.24   p = 0.0000  (chi2, 1 df)
+--------------------------------------------------------------------
+window shuffle (W = 25)   p = 0.0020   null mean +0.066 [-0.169, +0.276] *
+global shuffle            p = 0.0020   null mean -0.016 [-0.244, +0.179]
+--------------------------------------------------------------------
+stationarity of alpha     p = 0.4540
+  (brand shares across stretches of the sequence, vs a bootstrap
+   null holding alpha constant at gamma = gamma-hat)
+   3 blocks of 133          p = 0.3540   chi2     9.5
+   6 blocks of  66          p = 0.2420   chi2    26.5
+  12 blocks of  33          p = 0.3760   chi2    49.6
+  24 blocks of  16          p = 0.6920   chi2    87.3
+====================================================================
+verdict: state_dependence
+         state dependence: the effect survives shuffling inside short windows,
+         so it is not slow drift in this household's tastes
+```
+
 With a single household there is nothing left for cross-sectional heterogeneity
 to hide in — `alpha` is a constant — so the whole hierarchical apparatus is
 unnecessary. `mode = :single` fits a **fixed-effect conditional logit** by
@@ -238,14 +274,54 @@ that verdict as *"`gamma` is not identified for this household"*, not as
 *"there is no state dependence"* — the pre-test protects the conclusion, it does
 not recover the estimate.
 
+Here is the same report on a household with **no state dependence at all**, whose
+tastes drift. The classical reading of the top half is "inertia": `gamma = 0.33`,
+LR `p = 0.009`, the interval clear of zero. The bottom half is what stops it.
+
+```
+gamma                        0.330   se 0.123
+  profile 95% CI          [  0.085,   0.567] *   <- prefer this one
+  LR vs gamma=0               6.90   p = 0.0086  (chi2, 1 df)
+--------------------------------------------------------------------
+window shuffle (W = 25)   p = 0.4520   null mean +0.305 [+0.076, +0.519]
+global shuffle            p = 0.0080   null mean -0.015 [-0.285, +0.237]
+--------------------------------------------------------------------
+stationarity of alpha     p = 0.0020 *
+   3 blocks of 133          p = 0.0020   chi2    60.6
+   6 blocks of  66          p = 0.0020   chi2    79.5
+  12 blocks of  33          p = 0.0020   chi2   106.0
+  24 blocks of  16          p = 0.0020   chi2   155.2
+  every scale rejects, so the drift is not confined to one time scale
+====================================================================
+verdict: nonstationarity
+         tastes moved: this household's brand shares are not the same across
+         the sequence, so alpha is not a constant and the window null's
+         assumption fails. gamma is not identified here -- read it as a
+         description, not as evidence of state dependence
+```
+
+Note the window null's mean sitting at `+0.305`: the drift-induced clustering
+survives a within-window shuffle, so the bar the estimate is judged against rises
+to meet it, and `p_window = 0.45`. The pre-test then says why.
+
 ```julia
 r = DHRTests(y; mode = :single)
 r.p_stationarity                 # small => tastes moved, gamma not identified
 r.n_blocks, r.p_blocks           # which time scale it broke on
 
 stationarity_test(y)             # standalone, same test
-stationarity_test(y; n_blocks = 12)
+stationarity_test(y; n_blocks = 12)      # fix the scale yourself
+stationarity_test(y; n_blocks = [4, 8])  # or the grid
 ```
+
+The knobs, all optional:
+
+| keyword | default | meaning |
+|---|---|---|
+| `n_blocks` | `[3, 6, 12, 24]`, trimmed to blocks of 15+ occasions | block scales to scan |
+| `nperm` (on `DHRTests`) | `499` | bootstrap draws, shared with the permutation nulls |
+| `nboot` (on `stationarity_test`) | `499` | bootstrap draws |
+| `seed` | `20260826` | RNG seed |
 
 **How long does the history have to be?** With B = 4, at the 5% level:
 
@@ -569,6 +645,11 @@ Julia パッケージです。Dubé, Hitsch & Rossi (2010) に依拠していま
 `DHRTests(X)` を呼ぶと、状態依存係数 γ と信用区間、順序シャッフルのプラセボ、
 そして判定が返ります。
 
+**1 世帯の長い履歴**を使うモード（[`mode = :single`](#パネルではなく-1-世帯の長い履歴を使う-mode--single)）
+もあります。固定効果条件付きロジット ＋ 窓内シャッフル null に加えて、
+[定常性の事前検定](#仮定を置くのではなく検定する-p_stationarity)が入っており、
+**嗜好が動いているだけの世帯を「慣性あり」と判定しない**ようになっています。
+
 ## 使い方
 
 ```julia
@@ -734,6 +815,34 @@ one = simulate_panel(H = 1, B = 4, T = 400, gamma = 0.8, seed = 2)
 DHRTests(one.X[1]; mode = :single)
 ```
 
+```
+State dependence in a single purchase history
+====================================================================
+history      : 400 occasions (399 used), 4 of 4 brands bought
+raw repeat   : 0.393 of consecutive occasions repeat the brand
+model        : fixed-effect conditional logit (no heterogeneity to
+               confound: alpha is a constant for one household)
+--------------------------------------------------------------------
+gamma                        0.625   se 0.104
+  Wald    95% CI          [  0.422,   0.828] *
+  profile 95% CI          [  0.420,   0.827] *   <- prefer this one
+  odds ratio exp(gamma)      1.868   [  1.522,   2.286]
+  LR vs gamma=0              34.24   p = 0.0000  (chi2, 1 df)
+--------------------------------------------------------------------
+window shuffle (W = 25)   p = 0.0020   null mean +0.066 [-0.169, +0.276] *
+global shuffle            p = 0.0020   null mean -0.016 [-0.244, +0.179]
+--------------------------------------------------------------------
+stationarity of alpha     p = 0.4540
+  (brand shares across stretches of the sequence, vs a bootstrap
+   null holding alpha constant at gamma = gamma-hat)
+   3 blocks of 133          p = 0.3540   chi2     9.5
+   6 blocks of  66          p = 0.2420   chi2    26.5
+  12 blocks of  33          p = 0.3760   chi2    49.6
+  24 blocks of  16          p = 0.6920   chi2    87.3
+====================================================================
+verdict: state_dependence
+```
+
 世帯が 1 つなら、世帯間の観測されない異質性が隠れる場所はありません（α は定数）。
 階層モデルは不要になるので、`mode = :single` は **固定効果条件付きロジット**を
 Newton 法で当て、尤度比で `gamma = 0` を検定し、**プロファイル尤度区間**を返します
@@ -819,14 +928,50 @@ Reibstein & Wright (1984) の手続き ── まず定常性を検定し、通�
 **「状態依存がない」ではありません** ── 事前検定は結論を守るだけで、推定値を
 救ってはくれません。
 
+同じレポートを、**状態依存が一切ない**のに嗜好が動いている世帯に当てたものです。
+上半分だけを古典的に読めば「慣性あり」になります（γ = 0.33、LR の p = 0.009、
+区間は 0 を跨がない）。それを止めるのが下半分です。
+
+```
+gamma                        0.330   se 0.123
+  profile 95% CI          [  0.085,   0.567] *   <- prefer this one
+  LR vs gamma=0               6.90   p = 0.0086  (chi2, 1 df)
+--------------------------------------------------------------------
+window shuffle (W = 25)   p = 0.4520   null mean +0.305 [+0.076, +0.519]
+global shuffle            p = 0.0080   null mean -0.015 [-0.285, +0.237]
+--------------------------------------------------------------------
+stationarity of alpha     p = 0.0020 *
+   3 blocks of 133          p = 0.0020   chi2    60.6
+   6 blocks of  66          p = 0.0020   chi2    79.5
+  12 blocks of  33          p = 0.0020   chi2   106.0
+  24 blocks of  16          p = 0.0020   chi2   155.2
+  every scale rejects, so the drift is not confined to one time scale
+====================================================================
+verdict: nonstationarity
+```
+
+窓内 null の平均が **+0.305** まで上がっている点に注目してください。嗜好変化による
+かたまりは窓内シャッフルでも壊れないので、推定値が judged される基準そのものが
+持ち上がり、`p_window = 0.45` になります。事前検定はその理由を言い当てます。
+
 ```julia
 r = DHRTests(y; mode = :single)
 r.p_stationarity                 # 小さい => 嗜好が動いている。γ は識別されていない
 r.n_blocks, r.p_blocks           # どの時間尺度で崩れたか
 
 stationarity_test(y)             # 単独でも呼べる
-stationarity_test(y; n_blocks = 12)
+stationarity_test(y; n_blocks = 12)      # 尺度を固定
+stationarity_test(y; n_blocks = [4, 8])  # グリッドを指定
 ```
+
+引数はすべて省略可能です。
+
+| 引数 | 既定 | 意味 |
+|---|---|---|
+| `n_blocks` | `[3, 6, 12, 24]`（15 機会以上のブロックになるものだけ） | 走査するブロック尺度 |
+| `nperm`（`DHRTests`） | `499` | ブートストラップ回数。並べ替え null と共通 |
+| `nboot`（`stationarity_test`） | `499` | ブートストラップ回数 |
+| `seed` | `20260826` | 乱数シード |
 
 **どれだけの履歴が要るか。** B = 4、5% 水準で:
 
