@@ -110,14 +110,33 @@ condition is taken as given, exactly as in DHR.
 
 ## What is estimated
 
-A hierarchical Bayes multinomial logit with a flexible heterogeneity distribution:
+A hierarchical Bayes multinomial logit with a flexible heterogeneity distribution.
+
+At every purchase occasion the model hands each brand a **utility** — a score for
+how likely that brand is to be picked. A random error is added on top, and the
+brand with the largest total wins. With the error drawn from a Gumbel
+distribution this is exactly the logit choice probability
+$e^{v_j} / \sum_k e^{v_k}$.
 
 $$v_{hjt} = \alpha_{hj} + \gamma \cdot \mathbb{1}\{j = y_{h,t-1}\} + x_{hjt}'\beta,
 \qquad \alpha_h \sim \sum_{k=1}^{K} \pi_k \, N(\mu_k, \Sigma_k)$$
 
-with $\alpha_{hB} \equiv 0$. Sampling is Gibbs with random-walk Metropolis blocks
-(household intercepts, $\gamma$, $\beta$) and a Normal-Inverse-Wishart /
-Dirichlet update for the mixture. Priors follow DHR: $\text{Dir}(0.5/K)$,
+* $\alpha_{hj}$ — household $h$'s fixed taste for brand $j$. **This is the
+  zero-order part.** It comes from a finite normal mixture, so the shape of the
+  heterogeneity is not forced into a single bell.
+* $\gamma$ — the **state-dependence coefficient**. Take this term away and each
+  brand is left with a score that never moves: the model collapses back to
+  zero-order.
+* $x_{hjt}'\beta$ — optional covariates (price, display, ...).
+
+**Only differences in utility matter.** Adding the same number to every brand
+changes no choice probability, so one brand is pinned at $\alpha_{hB} \equiv 0$.
+That is also why the scale is log-odds — $\gamma = 0.8$ means "0.8 higher on the
+log-odds scale", and hence why `exp(gamma)` is reported as an odds ratio.
+
+Sampling is Gibbs with random-walk Metropolis blocks (household intercepts,
+$\gamma$, $\beta$) and a Normal-Inverse-Wishart / Dirichlet update for the
+mixture. Priors follow DHR: $\text{Dir}(0.5/K)$,
 $\mu_k \mid \Sigma_k \sim N(0, 16\Sigma_k)$, $\Sigma_k \sim IW(p+3, (p+3)I)$.
 
 **$\gamma$ is common across households on purpose.** With the handful of occasions a
@@ -710,12 +729,29 @@ build_panel([2, 2, 1, 1, 2])       # -> [0 0 1 1 0
 
 ## 何を推定しているか
 
-異質性を柔軟にした階層ベイズ多項ロジット
+異質性を柔軟にした階層ベイズ多項ロジットです。
+
+購買機会ごとに、世帯 $h$ がブランド $j$ に与える**効用**（そのブランドの選ばれ
+やすさを表すスコア）を次の形で置きます。ここにランダムな誤差が乗り、合計が
+一番大きくなったブランドが選ばれる、と考えます。誤差に Gumbel 分布を仮定すると、
+そのままロジットの選択確率 $e^{v_j} / \sum_k e^{v_k}$ になります。
 
 $$v_{hjt} = \alpha_{hj} + \gamma \cdot 1\{j = y_{h,t-1}\} + x_{hjt}'\beta, \qquad
 \alpha_h \sim \sum_k \pi_k N(\mu_k, \Sigma_k)$$
 
-を Gibbs ＋ ランダムウォーク Metropolis で推定します。事前分布は DHR と同じ
+* $\alpha_{hj}$ … 世帯 $h$ のブランド $j$ に対する固定された選好。**ここがゼロ次の
+  部分**です。有限正規混合から引くので、異質性の形が単峰に縛られません
+* $\gamma$ … **状態依存係数**。この項を取り除くと、残るのはブランドごとに動かない
+  スコアだけになり、モデルはゼロ次に戻ります
+* $x_{hjt}'\beta$ … 任意の共変量（価格、山積みなど）
+
+**効用は差だけが意味を持ちます。** 全ブランドに同じ数を足しても選択確率は変わらない
+ので、基準ブランドを $\alpha_{hB} \equiv 0$ に固定します。尺度が対数オッズになるのも
+これが理由で、$\gamma = 0.8$ は「対数オッズが 0.8 高い」という意味です。`exp(gamma)`
+をオッズ比として報告しているのもここから来ています。
+
+推定は Gibbs ＋ ランダムウォーク Metropolis（世帯切片、$\gamma$、$\beta$ のブロック）と、
+混合分布に対する正規逆ウィシャート／ディリクレ更新です。事前分布は DHR と同じ
 （`Dir(0.5/K)`、`μ_k|Σ_k ~ N(0, 16Σ_k)`、`Σ_k ~ IW(p+3, (p+3)I)`）。
 
 **γ は意図的に世帯共通** にしています。1 世帯あたりの購買機会が数回しかない
