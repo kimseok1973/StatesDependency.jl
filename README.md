@@ -658,7 +658,7 @@ explanations for consumer inertia. *The RAND Journal of Economics*, 41(3), 417�
 # 日本語
 
 **連続購買の状態依存性**（前回買ったブランドを次も選びやすいか）を統計的に判定する
-Julia パッケージです。Dubé, Hitsch & Rossi (2010)[Dubé, Hitsch & Rossi (2010)](https://onlinelibrary.wiley.com/doi/abs/10.1111/j.1756-2171.2010.00106.x) に依拠しています。
+Julia パッケージです。[Dubé, Hitsch & Rossi (2010)](https://onlinelibrary.wiley.com/doi/abs/10.1111/j.1756-2171.2010.00106.x) に依拠しています。
 
 入力は世帯ごとの **ブランド（行）× 購買機会（列）の数量マトリクス** 1 枚だけ。
 `DHRTests(X)` を呼ぶと、状態依存係数 γ と信用区間、順序シャッフルのプラセボ、
