@@ -118,8 +118,12 @@ brand with the largest total wins. With the error drawn from a Gumbel
 distribution this is exactly the logit choice probability
 $e^{v_j} / \sum_k e^{v_k}$.
 
-$$v_{hjt} = \alpha_{hj} + \gamma \cdot \mathbb{1}\{j = y_{h,t-1}\} + x_{hjt}'\beta,
-\qquad \alpha_h \sim \sum_{k=1}^{K} \pi_k \, N(\mu_k, \Sigma_k)$$
+$$v_{hjt} = \alpha_{hj} + \gamma \cdot \mathbb{1}\lbrace j = y_{h,t-1} \rbrace + x_{hjt}'\beta,
+\qquad \alpha_h \sim \sum_{k=1}^{K} \pi_k N(\mu_k, \Sigma_k)$$
+
+$\mathbb{1}\lbrace \cdot \rbrace$ is the indicator: 1 when brand $j$ is the one
+bought last time, 0 otherwise. So `gamma` is added to exactly one brand's
+utility per occasion — the one bought at $t-1$.
 
 * $\alpha_{hj}$ — household $h$'s fixed taste for brand $j$. **This is the
   zero-order part.** It comes from a finite normal mixture, so the shape of the
@@ -741,8 +745,11 @@ build_panel([2, 2, 1, 1, 2])       # -> [0 0 1 1 0
 一番大きくなったブランドが選ばれる、と考えます。誤差に Gumbel 分布を仮定すると、
 そのままロジットの選択確率 $e^{v_j} / \sum_k e^{v_k}$ になります。
 
-$$v_{hjt} = \alpha_{hj} + \gamma \cdot 1\{j = y_{h,t-1}\} + x_{hjt}'\beta, \qquad
+$$v_{hjt} = \alpha_{hj} + \gamma \cdot \mathbb{1}\lbrace j = y_{h,t-1} \rbrace + x_{hjt}'\beta, \qquad
 \alpha_h \sim \sum_k \pi_k N(\mu_k, \Sigma_k)$$
+
+$\mathbb{1}\lbrace \cdot \rbrace$ は**指示関数**で、ブランド $j$ が前回買ったものなら 1、そうでなければ 0 を返します。
+つまり $\gamma$ は、その機会に**前回買った 1 ブランドの効用にだけ**足されます。
 
 * $\alpha_{hj}$ … 世帯 $h$ のブランド $j$ に対する固定された選好。**ここがゼロ次の
   部分**です。有限正規混合から引くので、異質性の形が単峰に縛られません
