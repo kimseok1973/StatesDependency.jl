@@ -274,7 +274,7 @@ function DHRTests(X;
         gp  = vec(fit_pl.gamma)
         pl  = (mean = mean(gp), median = median(gp), sd = std(gp),
                ci = _ci(gp, level), p_positive = mean(>(0), gp),
-               ess = ess(fit_pl.gamma), rhat = split_rhat(fit_pl.gamma))
+               ess = ess(fit_pl.gamma[1, :, :]), rhat = split_rhat(fit_pl.gamma[1, :, :]))
         # gamma and gamma_placebo come from independent posteriors, so pairing
         # draws at random is a draw from the posterior of their difference.
         rng = Xoshiro(UInt64(seed) + 0xF00D)
@@ -309,7 +309,7 @@ function DHRTests(X;
         panel.B, n_households(panel), n_occasions(panel), n_used(panel),
         lagged_repeat_rate(panel), float(level),
         mean(g), median(g), std(g), gci, mean(>(0), g),
-        ess(fit_sd.gamma), split_rhat(fit_sd.gamma),
+        ess(fit_sd.gamma[1, :, :]), split_rhat(fit_sd.gamma[1, :, :]),
         exp(mean(g)), (exp(gci[1]), exp(gci[2])),
         mean(dpp), _ci(dpp, level),
         pl, exc, excci, pexc,

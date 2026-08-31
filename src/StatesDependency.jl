@@ -28,6 +28,7 @@ using Distributions
 using InverseFunctions
 
 export DHRTests, DHRTestResult, DHRSingleResult
+export brandwise_test, BrandwiseResult
 export PurchasePanel, build_panel, shuffle_panel, lagged_repeat_rate, choice_matrix
 export n_households, n_occasions, n_used, n_covariates
 export simulate_panel, dummy_data
@@ -46,5 +47,6 @@ include("simulate.jl")
 include("dhrtests.jl")
 include("posterior.jl")
 include("single.jl")
+include("brandwise.jl")
 
 end # module

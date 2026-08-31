@@ -23,11 +23,14 @@
 Posterior draws and fit statistics from [`fit_hbmnl`](@ref).
 """
 struct HBMNLFit
-    gamma::Matrix{Float64}        # ndraws x nchains (0 x nchains when sd = false)
+    gamma::Array{Float64,3}       # G x ndraws x nchains, G = brandwise ? B : 1
+    gamma_bar::Matrix{Float64}    # ndraws x nchains, mixture mean (brandwise only)
+    tau::Matrix{Float64}          # ndraws x nchains, between-brand SD (brandwise only)
+    brandwise::Bool
     beta::Array{Float64,3}        # L x ndraws x nchains
     loglik::Matrix{Float64}       # ndraws x nchains
     alpha_mean::Matrix{Float64}   # p x H, pooled posterior mean
-    gamma_mean::Float64
+    gamma_mean::Vector{Float64}
     beta_mean::Vector{Float64}
     dic::Float64
     p_D::Float64
@@ -72,15 +75,16 @@ end
 
 # log-likelihood of one household given its parameters
 function _ll_household(y::Vector{Int}, Xc, alpha::AbstractVector{Float64},
-                       gamma::Float64, beta::Vector{Float64}, B::Int,
-                       buf::Vector{Float64})
+                       gamma::AbstractVector{Float64}, beta::Vector{Float64},
+                       B::Int, buf::Vector{Float64}, bw::Bool = false)
     ll = 0.0
     L = length(beta)
     @inbounds for t in 2:length(y)
         lastb = y[t-1]
+        gl = gamma[bw ? lastb : 1]      # only the lagged brand's utility moves
         for j in 1:B
             v = j < B ? alpha[j] : 0.0
-            j == lastb && (v += gamma)
+            j == lastb && (v += gl)
             if L > 0
                 for l in 1:L
                     v += Xc[j, l, t] * beta[l]
@@ -93,13 +97,14 @@ function _ll_household(y::Vector{Int}, Xc, alpha::AbstractVector{Float64},
     return ll
 end
 
-function _ll_total(panel::PurchasePanel, alpha::Matrix{Float64}, gamma::Float64,
-                   beta::Vector{Float64}, buf::Vector{Float64})
+function _ll_total(panel::PurchasePanel, alpha::Matrix{Float64},
+                   gamma::AbstractVector{Float64}, beta::Vector{Float64},
+                   buf::Vector{Float64}, bw::Bool = false)
     s = 0.0
     for h in eachindex(panel.choices)
         Xc = panel.covariates === nothing ? nothing : panel.covariates[h]
         s += _ll_household(panel.choices[h], Xc, view(alpha, :, h), gamma, beta,
-                           panel.B, buf)
+                           panel.B, buf, bw)
     end
     return s
 end
@@ -168,6 +173,44 @@ function _gamma_logpost(S, A, n, nrep::Int, g::Float64, prior_sd::Float64)
     return g * nrep - acc - 0.5 * (g / prior_sd)^2
 end
 
+# Which occasions had brand b as the previous choice, and how many of those
+# repeated it. Both depend on the DATA only, not on any parameter, so the
+# partition is computed once and reused for every sweep -- summing over all
+# brands costs exactly one pass, the same as the common-gamma version.
+# log posterior of log(tau) under gamma_b ~ N(gbar, tau^2) and a half-normal
+# prior on tau. The trailing +lt is the change-of-variable Jacobian.
+@inline function _log_tau_post(lt::Float64, G::Int, ss::Float64, scale::Float64)
+    t2 = exp(2 * lt)
+    return -(G - 1) * lt - ss / (2 * t2) - 0.5 * t2 / scale^2
+end
+
+function _lag_partition(panel::PurchasePanel)
+    B = panel.B
+    idx  = [Int[] for _ in 1:B]
+    nrep = zeros(Int, B)
+    i = 0
+    for y in panel.choices, t in 2:length(y)
+        i += 1
+        lag = y[t-1]
+        push!(idx[lag], i)
+        y[t] == lag && (nrep[lag] += 1)
+    end
+    return idx, nrep
+end
+
+# Conditional for one brand's gamma. Same closed form as above, restricted to
+# that brand's occasions, with a normal prior centred at `pm` (the mixture mean
+# when brandwise, 0 otherwise).
+function _gamma_logpost_b(S, A, idx::Vector{Int}, nrep::Int, g::Float64,
+                          pm::Float64, psd::Float64)
+    e = exp(g) - 1
+    acc = 0.0
+    @inbounds for i in idx
+        acc += log(S[i] + A[i] * e)
+    end
+    return g * nrep - acc - 0.5 * ((g - pm) / psd)^2
+end
+
 """
     fit_hbmnl(panel; K, R, burnin, thin, nchains, sd, seed, verbose, ...)
 
@@ -199,6 +242,8 @@ function fit_hbmnl(panel::PurchasePanel;
                    nu0_add::Int = 3,
                    gamma_prior_sd::Float64 = 10.0,
                    n_gamma_sweeps::Int = 10,
+                   brandwise::Bool = false,
+                   tau_scale::Float64 = 0.5,
                    label::AbstractString = "")
 
     K >= 1 || throw(ArgumentError("K must be >= 1"))
@@ -215,7 +260,10 @@ function fit_hbmnl(panel::PurchasePanel;
     nd   = length(keep)
     nd > 10 || throw(ArgumentError("only $nd draws would be kept; increase R or reduce thin"))
 
-    gamma_out  = Matrix{Float64}(undef, sd ? nd : 0, nchains)
+    G          = brandwise ? panel.B : 1
+    gamma_out  = Array{Float64,3}(undef, G, sd ? nd : 0, nchains)
+    gbar_out   = Matrix{Float64}(undef, (sd && brandwise) ? nd : 0, nchains)
+    tau_out    = Matrix{Float64}(undef, (sd && brandwise) ? nd : 0, nchains)
     beta_out   = Array{Float64,3}(undef, L, nd, nchains)
     ll_out     = Matrix{Float64}(undef, nd, nchains)
     alpha_out  = Array{Float64,3}(undef, p, H, nchains)
@@ -225,10 +273,18 @@ function fit_hbmnl(panel::PurchasePanel;
     chains = 1:nchains
     runner = function (c)
         rng = Xoshiro(UInt64(seed) + UInt64(1000c))
-        g, b, ll, am, aa, ag = _run_chain(panel, K, R, burnin, keep, sd, rng, verbose,
-                                          a0, kappa0, nu0_add, gamma_prior_sd,
-                                          n_gamma_sweeps, p, L, H, label, c)
-        sd && (gamma_out[:, c] = g)
+        g, gb, tu, b, ll, am, aa, ag =
+            _run_chain(panel, K, R, burnin, keep, sd, rng, verbose,
+                       a0, kappa0, nu0_add, gamma_prior_sd,
+                       n_gamma_sweeps, p, L, H, label, c,
+                       brandwise, tau_scale)
+        if sd
+            gamma_out[:, :, c] = g
+            if brandwise
+                gbar_out[:, c] = gb
+                tau_out[:, c]  = tu
+            end
+        end
         L > 0 && (beta_out[:, :, c] = b)
         ll_out[:, c]      = ll
         alpha_out[:, :, c] = am
@@ -248,11 +304,11 @@ function fit_hbmnl(panel::PurchasePanel;
     end
 
     alpha_mean = dropdims(sum(alpha_out; dims = 3); dims = 3) ./ nchains
-    gamma_mean = sd ? mean(gamma_out) : 0.0
+    gamma_mean = sd ? vec(mean(reshape(gamma_out, G, :); dims = 2)) : zeros(G)
     beta_mean  = L > 0 ? vec(mean(reshape(beta_out, L, :); dims = 2)) : Float64[]
 
     buf   = Vector{Float64}(undef, panel.B)
-    ll_at = _ll_total(panel, alpha_mean, gamma_mean, beta_mean, buf)
+    ll_at = _ll_total(panel, alpha_mean, gamma_mean, beta_mean, buf, brandwise)
     Dbar  = -2 * mean(ll_out)
     Dhat  = -2 * ll_at
     p_D   = Dbar - Dhat
@@ -262,13 +318,15 @@ function fit_hbmnl(panel::PurchasePanel;
     m     = maximum(negll)
     lml   = -(m + log(sum(exp.(negll .- m)) / length(negll)))
 
-    return HBMNLFit(gamma_out, beta_out, ll_out, alpha_mean, gamma_mean, beta_mean,
+    return HBMNLFit(gamma_out, gbar_out, tau_out, brandwise,
+                    beta_out, ll_out, alpha_mean, gamma_mean, beta_mean,
                     dic, p_D, lml, mean(acc_a), mean(acc_g), K, sd, nd, nchains)
 end
 
 function _run_chain(panel, K, R, burnin, keep, sd, rng, verbose,
                     a0, kappa0, nu0_add, gamma_prior_sd, n_gamma_sweeps,
-                    p, L, H, label, c)
+                    p, L, H, label, c,
+                    bw::Bool = false, tau_scale::Float64 = 0.5)
 
     B    = panel.B
     nu0  = float(p + nu0_add)
@@ -284,11 +342,15 @@ function _run_chain(panel, K, R, burnin, keep, sd, rng, verbose,
     logdt = zeros(K)
     propL = [LowerTriangular(Matrix{Float64}(I, p, p)) for _ in 1:K]
 
-    gamma = 0.0
-    beta  = zeros(L)
+    G      = bw ? B : 1
+    gamma  = zeros(G)
+    gbar   = 0.0                 # mixture mean of the brand gammas
+    tau2   = 0.25                # between-brand variance
+    beta   = zeros(L)
+    lagidx, lagrep = _lag_partition(panel)
 
     s_a = fill(2.38 / sqrt(p), H)
-    s_g = 0.3
+    s_g = fill(0.3, G)
     s_b = L > 0 ? 0.3 : 0.0
 
     nused = n_used(panel)
@@ -302,12 +364,14 @@ function _run_chain(panel, K, R, burnin, keep, sd, rng, verbose,
     llh   = Vector{Float64}(undef, H)
     for h in 1:H
         Xc = panel.covariates === nothing ? nothing : panel.covariates[h]
-        llh[h] = _ll_household(panel.choices[h], Xc, view(alpha, :, h), gamma, beta, B, buf)
+        llh[h] = _ll_household(panel.choices[h], Xc, view(alpha, :, h), gamma, beta, B, buf, bw)
     end
 
     na = 0; da = 0; ng = 0; dg = 0
     nd = length(keep)
-    g_out  = Vector{Float64}(undef, sd ? nd : 0)
+    g_out    = Matrix{Float64}(undef, G, sd ? nd : 0)
+    gbar_out = Vector{Float64}(undef, (sd && bw) ? nd : 0)
+    tau_out  = Vector{Float64}(undef, (sd && bw) ? nd : 0)
     b_out  = Array{Float64,2}(undef, L, nd)
     ll_out = Vector{Float64}(undef, nd)
     a_acc  = zeros(p, H)
@@ -328,7 +392,7 @@ function _run_chain(panel, K, R, burnin, keep, sd, rng, verbose,
                 prop[i] = ah[i] + s_a[h] * prop[i]
             end
             Xc  = panel.covariates === nothing ? nothing : panel.covariates[h]
-            llp = _ll_household(panel.choices[h], Xc, prop, gamma, beta, B, buf)
+            llp = _ll_household(panel.choices[h], Xc, prop, gamma, beta, B, buf, bw)
             lpr_new = _logmvn(prop, mu[k], cholL[k], logdt[k], work)
             lpr_old = _logmvn(ah,   mu[k], cholL[k], logdt[k], work)
             acc = (llp + lpr_new) - (llh[h] + lpr_old)
@@ -353,7 +417,7 @@ function _run_chain(panel, K, R, burnin, keep, sd, rng, verbose,
             for h in 1:H
                 Xc = panel.covariates[h]
                 llnew += _ll_household(panel.choices[h], Xc, view(alpha, :, h), gamma,
-                                       bp, B, buf)
+                                       bp, B, buf, bw)
             end
             llold = sum(llh)
             acc = (llnew - 0.5 * sum(abs2, bp ./ gamma_prior_sd)) -
@@ -363,7 +427,7 @@ function _run_chain(panel, K, R, burnin, keep, sd, rng, verbose,
                 beta = bp
                 for h in 1:H
                     llh[h] = _ll_household(panel.choices[h], panel.covariates[h],
-                                           view(alpha, :, h), gamma, beta, B, buf)
+                                           view(alpha, :, h), gamma, beta, B, buf, bw)
                 end
             end
             if r <= burnin
@@ -372,31 +436,64 @@ function _run_chain(panel, K, R, burnin, keep, sd, rng, verbose,
             end
         end
 
-        # --- 3. common state-dependence coefficient ------------------------
+        # --- 3. state-dependence coefficient(s) ----------------------------
         if sd
-            nu = _fill_gamma_cache!(Sg, Ag, repg, panel, alpha, beta)
-            nrep = 0
-            @inbounds for i in 1:nu
-                nrep += repg[i]
-            end
-            lp = _gamma_logpost(Sg, Ag, nu, nrep, gamma, gamma_prior_sd)
-            for _ in 1:n_gamma_sweeps
-                gp  = gamma + s_g * randn(rng)
-                lpp = _gamma_logpost(Sg, Ag, nu, nrep, gp, gamma_prior_sd)
-                ok  = log(rand(rng)) < lpp - lp
-                if ok
-                    gamma = gp; lp = lpp
+            _fill_gamma_cache!(Sg, Ag, repg, panel, alpha, beta)
+
+            # one Metropolis block per brand (or the single common one). Each
+            # brand only touches the occasions where it was the previous
+            # choice, so the whole loop is one pass over the data.
+            for b in 1:G
+                idx  = bw ? lagidx[b] : collect(1:n_used(panel))
+                nrb  = bw ? lagrep[b] : sum(lagrep)
+                pm   = bw ? gbar : 0.0
+                psd  = bw ? sqrt(tau2) : gamma_prior_sd
+                lp = _gamma_logpost_b(Sg, Ag, idx, nrb, gamma[b], pm, psd)
+                for _ in 1:n_gamma_sweeps
+                    gp  = gamma[b] + s_g[b] * randn(rng)
+                    lpp = _gamma_logpost_b(Sg, Ag, idx, nrb, gp, pm, psd)
+                    ok  = log(rand(rng)) < lpp - lp
+                    if ok
+                        gamma[b] = gp; lp = lpp
+                    end
+                    dg += 1; ng += ok
+                    if r <= burnin
+                        s_g[b] *= exp((ok - 0.30) / (r^0.6))
+                        s_g[b] = clamp(s_g[b], 1e-4, 10.0)
+                    end
                 end
-                dg += 1; ng += ok
-                if r <= burnin
-                    s_g *= exp((ok - 0.30) / (r^0.6))
-                    s_g = clamp(s_g, 1e-4, 10.0)
-                end
             end
+
+            # hierarchical prior on the brand gammas: gamma_b ~ N(gbar, tau^2),
+            # gbar ~ N(0, gamma_prior_sd^2), tau^2 ~ InvGamma(a, b).
+            # tau -> 0 recovers the common-gamma model, so its posterior is the
+            # direct answer to "does state dependence differ by brand?".
+            if bw
+                prec  = G / tau2 + 1 / gamma_prior_sd^2
+                mpost = (sum(gamma) / tau2) / prec
+                gbar  = mpost + randn(rng) / sqrt(prec)
+                ss    = 0.0
+                for b in 1:G; ss += (gamma[b] - gbar)^2; end
+                # Half-normal prior on tau, sampled by random walk on log(tau).
+                # An inverse-gamma on tau^2 has NO mass near zero, so it would
+                # forbid the very state this test exists to detect (all brands
+                # sharing one gamma) -- see Gelman (2006).
+                lt = 0.5 * log(tau2)
+                lp = _log_tau_post(lt, G, ss, tau_scale)
+                for _ in 1:5
+                    lq  = lt + 0.4 * randn(rng)
+                    lpq = _log_tau_post(lq, G, ss, tau_scale)
+                    if log(rand(rng)) < lpq - lp
+                        lt = lq; lp = lpq
+                    end
+                end
+                tau2 = clamp(exp(2 * lt), 1e-10, 1e4)
+            end
+
             for h in 1:H
                 Xc = panel.covariates === nothing ? nothing : panel.covariates[h]
                 llh[h] = _ll_household(panel.choices[h], Xc, view(alpha, :, h),
-                                       gamma, beta, B, buf)
+                                       gamma, beta, B, buf, bw)
             end
         end
 
@@ -462,7 +559,13 @@ function _run_chain(panel, K, R, burnin, keep, sd, rng, verbose,
 
         # --- 6. store ------------------------------------------------------
         if kpos <= nd && r == keep[kpos]
-            sd && (g_out[kpos] = gamma)
+            if sd
+                g_out[:, kpos] = gamma
+                if bw
+                    gbar_out[kpos] = gbar
+                    tau_out[kpos]  = sqrt(tau2)
+                end
+            end
             L > 0 && (b_out[:, kpos] = beta)
             ll_out[kpos] = sum(llh)
             a_acc .+= alpha
@@ -470,12 +573,14 @@ function _run_chain(panel, K, R, burnin, keep, sd, rng, verbose,
         end
 
         if verbose && (r % max(1, R ÷ 10) == 0)
-            @printf("  [%s chain %d] sweep %d/%d  loglik=%.1f  gamma=%.3f\n",
-                    label, c, r, R, sum(llh), gamma)
+            @printf("  [%s chain %d] sweep %d/%d  loglik=%.1f  gamma=%s\n",
+                    label, c, r, R, sum(llh),
+                    G == 1 ? string(round(gamma[1]; digits = 3)) :
+                             string(round.(gamma; digits = 2)))
             flush(stdout)
         end
     end
 
     a_acc ./= nd
-    return g_out, b_out, ll_out, a_acc, na / max(da, 1), dg == 0 ? NaN : ng / dg
+    return g_out, gbar_out, tau_out, b_out, ll_out, a_acc, na / max(da, 1), dg == 0 ? NaN : ng / dg
 end

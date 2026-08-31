@@ -168,6 +168,66 @@ The verdict is `:state_dependence` only when all three agree — the $\gamma$ in
 excludes zero, the excess interval excludes zero, and DIC prefers the model with
 $\gamma$. Otherwise it is `:inconclusive` or `:no_evidence`.
 
+## Which brands have it: `brandwise_test`
+
+Whether inertia sits in one brand or spreads evenly across the category is a
+different question from whether the category has inertia at all, and a more
+actionable one. `brandwise_test` gives each brand its own coefficient,
+
+$$v_{hjt} = \alpha_{hj} + \gamma_j \cdot \mathbb{1}\lbrace j = y_{h,t-1} \rbrace + x_{hjt}'\beta,
+\qquad \gamma_j \sim N(\bar\gamma, \tau^2)$$
+
+```julia
+r = brandwise_test(X)
+r.excess, r.verdicts
+```
+
+**The raw `gamma_j` column is not safe to read.** Fit free per-brand
+coefficients to a panel whose truth is `(1.2, 0.8, 0.4, 0.0)` while ignoring
+heterogeneity and you get about `(1.96, 1.41, 1.35, 0.22)`: brand 3 picks up
++0.95 of bias while brand 2 picks up +0.61, so two brands a factor of two apart
+come out nearly tied — and with standard errors near 0.075 that tie looks
+*precise*. Every brand therefore gets **its own order-shuffled placebo**, and
+`EXCESS_j = gamma_j - placebo_j` is the column that means anything.
+
+Read the report top-down.
+
+**1. Do the brands differ at all?** `tau` is the spread of the brand
+coefficients. It is judged against the spread the same estimator manufactures on
+the order-shuffled panel, where every brand's true coefficient is zero by
+construction. *Not* by DIC: on nested models with useless extra parameters
+`delta-DIC < 0` comes up about half the time, which measured out at a **50%**
+false-positive rate. The placebo comparison measured **0%** on the same panels.
+
+**2. Which brands.** Per-brand verdicts require both the `EXCESS_j` interval to
+exclude zero and survival of Bayesian FDR at `fdr_q` across the brands. Measured
+on `gamma = 0` panels: **3.1%** of brands flagged, against a 5% target.
+
+**3. How much data is behind each number.** `gamma_j` rests only on the
+occasions where brand *j* was the previous choice, so its precision scales with
+the brand's share — empirically `SE ~ 2.6 / sqrt(n_lag)`. Below `min_lag`
+(default 300 lagged occasions) a brand is reported `:underpowered`, which is
+absence of evidence rather than evidence of absence.
+
+Recovery on a panel whose truth is `(1.2, 0.8, 0.4, 0.0)`:
+
+| brand | share | lag occ | gamma | placebo | EXCESS | verdict |
+|---|---:|---:|---:|---:|---:|---|
+| brand1 | 32.1% | 4886 | 1.264 | 0.025 | **1.239** | `:state_dependence` |
+| brand2 | 27.4% | 4168 | 0.807 | 0.011 | **0.796** | `:state_dependence` |
+| brand3 | 23.9% | 3626 | 0.467 | 0.024 | **0.443** | `:state_dependence` |
+| brand4 | 16.7% | 2520 | 0.053 | 0.013 | **0.040** | `:no_evidence` |
+
+*(`tau` 0.566 against a placebo 0.056, `P(>) = 0.996` — the brands differ.)*
+
+**Before spending on this:** `gamma_j` is on the log-odds scale, so the same
+coefficient buys a different lift in probability depending on the brand's base
+share — largest near a 40% share. A small brand can top the `EXCESS` column and
+still be the worst place to put the money. And the Levine & Seiler caution
+applies with more force here than to the pooled coefficient: if you are going to
+move budget on these numbers, check them against how the brands actually
+responded to past promotions.
+
 ## One long history instead of a panel: `mode = :single`
 
 ```julia
@@ -392,6 +452,7 @@ null_distribution(r, :window)     # the permutation distribution itself
 | `shuffle_panel(p, rng)` | the order-shuffled placebo panel |
 | `window_shuffle(y, w, rng)` | the within-window order null for one sequence |
 | `stationarity_test(y)` | is this household's `alpha` constant? run before trusting `p_window` |
+| `brandwise_test(X)` | which brands carry the state dependence; returns a `BrandwiseResult` |
 | `sampling_distribution(r)` | `Normal(gamma, se)` for a single-household result |
 | `null_distribution(r, :window)` | the permutation distribution of `gamma` |
 | `lagged_repeat_rate(p)` | descriptive repeat share |
@@ -855,6 +916,61 @@ P(j) / P(他のどれか)  が  2.21 倍になる
 posterior(res, :odds_ratio)       # exp(γ) の事後
 lift_distribution(res, 0.25)      # シェア 25% のブランドの確率上昇（要 Bijectors）
 ```
+
+## どのブランドに効いているか: `brandwise_test`
+
+慣性が 1 ブランドに偏っているのか、カテゴリ全体に薄く広がっているのかは、
+「カテゴリに慣性があるか」とは別の問いで、施策に直結するのはむしろこちらです。
+`brandwise_test` はブランドごとに係数を置きます。
+
+$$v_{hjt} = \alpha_{hj} + \gamma_j \cdot \mathbb{1}\lbrace j = y_{h,t-1} \rbrace + x_{hjt}'\beta,
+\qquad \gamma_j \sim N(\bar\gamma, \tau^2)$$
+
+```julia
+r = brandwise_test(X)
+r.excess, r.verdicts
+```
+
+**生の `gamma_j` の列をそのまま読んではいけません。** 真値が `(1.2, 0.8, 0.4, 0.0)`
+のパネルに、異質性を無視してブランド別係数を当てると概ね `(1.96, 1.41, 1.35, 0.22)`
+が返ります。ブランド3 が +0.95、ブランド2 が +0.61 のバイアスを拾うため、
+**真値が 2 倍違う 2 つがほぼ同着**になる。しかも SE は 0.075 程度なので、
+その同着が「精度よく」見えます。だからブランドごとに**専用の順序シャッフルプラセボ**を
+当て、`EXCESS_j = gamma_j - placebo_j` を読みます。
+
+レポートは上から順に読みます。
+
+**1. そもそもブランド間で違うのか。** `tau` はブランド係数のばらつきです。これを、
+同じ推定量が順序シャッフルしたパネル（全ブランドの真の係数が 0）で作り出すばらつきと
+比べます。**DIC では判定しません** ── 入れ子モデルで無意味なパラメータを足したとき
+`ΔDIC < 0` は半分くらいの確率で起きてしまい、実測で**誤検出率 50%** でした。
+プラセボ比較では同じパネルで **0%** です。
+
+**2. どのブランドか。** ブランド別の判定は、`EXCESS_j` の区間が 0 を跨がないことと、
+ブランド横断のベイズ FDR（`fdr_q`）を通ることの**両方**を要求します。
+`gamma = 0` のパネルでの実測は **3.1%**（目標 5%）。
+
+**3. その数字が何件のデータに乗っているか。** `gamma_j` は「そのブランドが前回choiceだった
+機会」だけに乗るので、精度はシェアに比例します（実測で `SE ≈ 2.6/√n_lag`）。
+`min_lag`（既定 300 機会）を下回るブランドは `:underpowered` と報告します。
+**「証拠がない」であって「効果がない」ではありません。**
+
+真値 `(1.2, 0.8, 0.4, 0.0)` のパネルでの復元:
+
+| ブランド | シェア | ラグ機会 | gamma | プラセボ | EXCESS | 判定 |
+|---|---:|---:|---:|---:|---:|---|
+| brand1 | 32.1% | 4886 | 1.264 | 0.025 | **1.239** | `:state_dependence` |
+| brand2 | 27.4% | 4168 | 0.807 | 0.011 | **0.796** | `:state_dependence` |
+| brand3 | 23.9% | 3626 | 0.467 | 0.024 | **0.443** | `:state_dependence` |
+| brand4 | 16.7% | 2520 | 0.053 | 0.013 | **0.040** | `:no_evidence` |
+
+*(`tau` 0.566 対 プラセボ 0.056、`P(>) = 0.996` ── ブランド間で違う。)*
+
+**予算を動かす前に。** `gamma_j` は対数オッズなので、同じ係数でも確率の押し上げ幅は
+ベースシェアに依存します（シェア 40% 付近で最大）。**小ブランドが `EXCESS` の首位でも、
+投資先としては最悪かもしれません。** そして Levine & Seiler の警告は、集計係数より
+ブランド別のほうに強く効きます。この数字で予算を動かすなら、過去の販促に各ブランドが
+実際どう反応したかと突き合わせてください。
 
 ## パネルではなく 1 世帯の長い履歴を使う: `mode = :single`
 

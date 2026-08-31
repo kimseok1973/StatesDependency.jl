@@ -408,6 +408,81 @@ const FAST = (K = 2, R = 4_000, burnin = 1_500, thin = 2, nchains = 2, verbose =
                                                                     T = 50).X)
     end
 
+    @testset "brandwise" begin
+        # a panel where brands really do differ: gamma = (1.0, 0.5, 0.0)
+        rng = Xoshiro(4242)
+        B, H, T = 3, 400, 16
+        gam = [1.0, 0.5, 0.0]
+        X = Vector{Matrix{Float64}}(undef, H)
+        v = zeros(B)
+        for h in 1:H
+            a = randn(rng, B); a[B] = 0.0
+            y = Vector{Int}(undef, T)
+            for t in 1:T
+                lag = t == 1 ? 0 : y[t-1]
+                for j in 1:B
+                    v[j] = a[j] + (j == lag ? gam[j] : 0.0)
+                end
+                m = maximum(v); sacc = 0.0
+                pr = [exp(vv - m) for vv in v]
+                sacc = sum(pr)
+                u = rand(rng) * sacc; c = 0.0; pick = B
+                for j in 1:B
+                    c += pr[j]
+                    if u <= c; pick = j; break; end
+                end
+                y[t] = pick
+            end
+            M = zeros(B, T); for t in 1:T; M[y[t], t] = 1.0; end
+            X[h] = M
+        end
+
+        r = brandwise_test(X; R = 3000, burnin = 1000, thin = 2, nchains = 2,
+                           min_lag = 100, verbose = false)
+
+        @test r isa BrandwiseResult
+        @test r.n_brands == B
+        @test length(r.gamma) == length(r.excess) == length(r.verdicts) == B
+        @test all(r.lag_occasions .> 0)
+        @test sum(r.lag_occasions) == r.n_used
+        @test isapprox(sum(r.shares), 1.0; atol = 1e-8)
+        # the ordering of EXCESS must follow the truth even though the raw
+        # gamma column need not
+        @test r.excess[1] > r.excess[2] > r.excess[3]
+        @test r.excess_ci[1][1] > 0            # brand 1 really has it
+        @test r.verdicts[1] === :state_dependence
+        @test r.verdicts[3] !== :state_dependence
+        @test 0 <= r.p_tau <= 1
+        @test r.tau > 0 && r.tau_placebo > 0
+
+        s = summarize(r)
+        @test length(s) == B
+        @test s[1].brand == r.brand_names[1]
+        @test s[1].excess ≈ r.excess[1]
+
+        # posterior by index and by name
+        d1 = posterior(r, 1)
+        @test d1 isa PosteriorSample
+        @test mean(d1) ≈ r.excess[1] atol = 1e-8
+        @test posterior(r, r.brand_names[2]) isa PosteriorSample
+        @test_throws ArgumentError posterior(r, "nope")
+
+        io = IOBuffer(); show(io, MIME"text/plain"(), r)
+        out = String(take!(io))
+        @test occursin("do brands differ?", out)
+        @test occursin("EXCESS", out)
+        io = IOBuffer(); show(io, r)
+        @test occursin("BrandwiseResult", String(take!(io)))
+
+        # a brand with too little information is flagged, not declared null
+        r2 = brandwise_test(X; R = 1500, burnin = 500, thin = 2, nchains = 1,
+                            min_lag = 10_000, verbose = false)
+        @test all(v -> v === :underpowered, r2.verdicts)
+
+        @test_throws ArgumentError brandwise_test(X; fdr_q = 0.0, verbose = false)
+        @test_throws ArgumentError brandwise_test(X; level = 1.5, verbose = false)
+    end
+
     @testset "posterior as a Distribution" begin
         sim = simulate_panel(H = 150, B = 4, T = 12, gamma = 0.8, seed = 41)
         res = DHRTests(sim.X; K = 1, R = 3_000, burnin = 1_000, thin = 2,

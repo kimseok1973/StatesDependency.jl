@@ -1,7 +1,7 @@
 name = "StatesDependency"
 uuid = "076ca352-d46e-46fd-b77b-9a55eea9a322"
 authors = ["kimseok1973"]
-version = "0.5.0"
+version = "0.6.0"
 
 [deps]
 Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
