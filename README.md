@@ -177,56 +177,119 @@ actionable one. `brandwise_test` gives each brand its own coefficient,
 $$v_{hjt} = \alpha_{hj} + \gamma_j \cdot \mathbb{1}\lbrace j = y_{h,t-1} \rbrace + x_{hjt}'\beta,
 \qquad \gamma_j \sim N(\bar\gamma, \tau^2)$$
 
+and re-fits it to an order-shuffled panel so **each brand gets its own placebo**.
+
 ```julia
-r = brandwise_test(X)
-r.excess, r.verdicts
+r = brandwise_test(X)          # same input forms as DHRTests
 ```
 
-**The raw `gamma_j` column is not safe to read.** Fit free per-brand
-coefficients to a panel whose truth is `(1.2, 0.8, 0.4, 0.0)` while ignoring
-heterogeneity and you get about `(1.96, 1.41, 1.35, 0.22)`: brand 3 picks up
-+0.95 of bias while brand 2 picks up +0.61, so two brands a factor of two apart
-come out nearly tied — and with standard errors near 0.075 that tie looks
-*precise*. Every brand therefore gets **its own order-shuffled placebo**, and
-`EXCESS_j = gamma_j - placebo_j` is the column that means anything.
+```
+Brand-wise state dependence
+============================================================================
+panel        : 800 households x 4 brands, 16000 occasions (15200 used)
+model        : HB multinomial logit, gamma_j ~ N(gamma-bar, tau^2),
+               each brand against its OWN order-shuffled placebo
+----------------------------------------------------------------------------
+do brands differ?   tau 0.565  vs placebo 0.058   P(>) = 0.995  -> yes
+                    tau 95% CI [0.290, 1.062]
+                    (DIC brandwise 30075.3  common 30233.3  delta -158.0 -- shown
+                     for reference only; DIC is not a test)
+----------------------------------------------------------------------------
+brand           share  lag occ    gamma  placebo    EXCESS  95% CI            P(>0)
+brand1          32.1%     4886    1.264    0.028    1.236  [  1.10,  1.36]  1.000 *
+brand2          27.4%     4168    0.805    0.010    0.795  [  0.66,  0.93]  1.000 *
+brand3          23.9%     3626    0.469    0.022    0.447  [  0.31,  0.59]  1.000 *
+brand4          16.7%     2520    0.051    0.015    0.036  [ -0.11,  0.18]  0.689
+----------------------------------------------------------------------------
+* state dependence at FDR 5%: brand1, brand2, brand3
+============================================================================
+```
 
-Read the report top-down.
+*(the truth behind this panel was `gamma = (1.2, 0.8, 0.4, 0.0)`)*
 
-**1. Do the brands differ at all?** `tau` is the spread of the brand
-coefficients. It is judged against the spread the same estimator manufactures on
-the order-shuffled panel, where every brand's true coefficient is zero by
-construction. *Not* by DIC: on nested models with useless extra parameters
-`delta-DIC < 0` comes up about half the time, which measured out at a **50%**
-false-positive rate. The placebo comparison measured **0%** on the same panels.
+### Reading it
 
-**2. Which brands.** Per-brand verdicts require both the `EXCESS_j` interval to
-exclude zero and survival of Bayesian FDR at `fdr_q` across the brands. Measured
-on `gamma = 0` panels: **3.1%** of brands flagged, against a 5% target.
+**1. `do brands differ?` — and stop here if the answer is no.** `tau` is the
+spread of the brand coefficients, judged against the spread the same estimator
+manufactures on the order-shuffled panel, where every brand's true coefficient is
+zero by construction. If `differ` is false, the category has one common `gamma`;
+use [`DHRTests`](#why-the-placebo-is-the-actual-test) and ignore the split.
 
-**3. How much data is behind each number.** `gamma_j` rests only on the
+DIC is printed but is **not** the test. On nested models with useless extra
+parameters `delta-DIC < 0` comes up about half the time — measured at a **50%**
+false-positive rate on `gamma = 0` panels, against **0%** for the placebo
+comparison.
+
+**2. The `EXCESS` column — never the raw `gamma`.** Fit free per-brand
+coefficients while ignoring heterogeneity to a panel whose truth is
+`(1.2, 0.8, 0.4, 0.0)` and you get about `(1.96, 1.41, 1.35, 0.22)`: brand 3
+picks up +0.95 of bias while brand 2 picks up +0.61, so two brands a factor of
+two apart come out nearly tied — and with standard errors near 0.075 that tie
+looks *precise*. `EXCESS_j = gamma_j - placebo_j` is the only column that means
+anything.
+
+**3. `lag occ` — the data behind each number.** `gamma_j` rests only on the
 occasions where brand *j* was the previous choice, so its precision scales with
-the brand's share — empirically `SE ~ 2.6 / sqrt(n_lag)`. Below `min_lag`
-(default 300 lagged occasions) a brand is reported `:underpowered`, which is
-absence of evidence rather than evidence of absence.
+the brand's share: empirically `SE ~ 2.6 / sqrt(n_lag)`. Below `min_lag`
+(default 300) a brand is reported `:underpowered`.
 
-Recovery on a panel whose truth is `(1.2, 0.8, 0.4, 0.0)`:
+A brand is marked `*` only if its `EXCESS` interval excludes zero **and** it
+survives Bayesian FDR at `fdr_q` across the brands. Measured on `gamma = 0`
+panels: **3.1%** of brands flagged, against a 5% target.
 
-| brand | share | lag occ | gamma | placebo | EXCESS | verdict |
-|---|---:|---:|---:|---:|---:|---|
-| brand1 | 32.1% | 4886 | 1.264 | 0.025 | **1.239** | `:state_dependence` |
-| brand2 | 27.4% | 4168 | 0.807 | 0.011 | **0.796** | `:state_dependence` |
-| brand3 | 23.9% | 3626 | 0.467 | 0.024 | **0.443** | `:state_dependence` |
-| brand4 | 16.7% | 2520 | 0.053 | 0.013 | **0.040** | `:no_evidence` |
+### Getting at the numbers
 
-*(`tau` 0.566 against a placebo 0.056, `P(>) = 0.996` — the brands differ.)*
+```julia
+r.differ                  # read this first
+r.tau, r.tau_placebo, r.p_tau
+r.excess, r.excess_ci     # what to read
+r.verdicts                # :state_dependence | :no_evidence | :underpowered
+r.gamma, r.placebo        # components; do not read gamma on its own
+r.lag_occasions, r.shares
+r.rhat, r.ess             # check these before believing anything
 
-**Before spending on this:** `gamma_j` is on the log-odds scale, so the same
-coefficient buys a different lift in probability depending on the brand's base
-share — largest near a 40% share. A small brand can top the `EXCESS` column and
-still be the worst place to put the money. And the Levine & Seiler caution
-applies with more force here than to the pooled coefficient: if you are going to
-move budget on these numbers, check them against how the brands actually
-responded to past promotions.
+summarize(r)              # Vector of NamedTuples, one per brand
+posterior(r, 1)           # EXCESS draws for brand 1, as a Distribution
+posterior(r, "brand2")    # ... or by name
+rand(posterior(r, 1), 1000)
+```
+
+| keyword | default | meaning |
+|---|---|---|
+| `fdr_q` | `0.05` | Bayesian FDR level for the per-brand verdicts |
+| `min_lag` | `300` | below this many lagged occasions a brand is `:underpowered` |
+| `compare_common` | `true` | also fit the common-gamma model (DIC, shown for reference) |
+| `tau_scale` | `0.5` | scale of the half-normal prior on `tau` |
+| `K`, `R`, `burnin`, `thin`, `nchains`, `level`, `covariates`, `brand_names`, `seed`, `verbose` | as in `DHRTests` | |
+
+**Cost.** Three fits (brandwise, its placebo, and the common-gamma reference)
+against one for `DHRTests`, so budget roughly 3x. `compare_common = false` drops
+it to two — `differ` does not depend on that fit.
+
+### Cautions
+
+* **`tau` cannot be zero.** It is a standard deviation, so its interval never
+  contains 0 and a "significant tau" means nothing. That is exactly why the test
+  is `P(tau > tau_placebo)` and not an interval.
+* **`:underpowered` is not `:no_evidence`.** It means the brand did not have
+  enough lagged occasions for a number worth reading — absence of evidence.
+  Merging small brands into an "other" bucket before calling this is usually
+  better than reading four noisy coefficients.
+* **Check `rhat` and `ess`.** More parameters means slower mixing than the scalar
+  test. The report warns above `Rhat = 1.01`; raise `R` when it does.
+* **`gamma_j` is on the log-odds scale.** The same coefficient buys a different
+  lift in probability depending on the brand's base share — largest near a 40%
+  share. **A small brand can top the `EXCESS` column and still be the worst place
+  to put the money.**
+* **Do not compare `gamma_j` across categories or datasets.** In a discrete
+  choice model only `beta / sigma_error` is identified, so the scale is set by
+  the category's own error variance. Within one fit the comparison is fine, which
+  is what this test does.
+* **Model-based, not experimental.** Levine & Seiler (2023) found a positive
+  pooled `gamma` from a choice model on bottled water where a hurricane-stockout
+  natural experiment found none. That caution applies with more force to a
+  coefficient split B ways. If you are going to move budget on these numbers,
+  check them against how the brands actually responded to past promotions.
 
 ## One long history instead of a panel: `mode = :single`
 
@@ -921,56 +984,116 @@ lift_distribution(res, 0.25)      # シェア 25% のブランドの確率上昇
 
 慣性が 1 ブランドに偏っているのか、カテゴリ全体に薄く広がっているのかは、
 「カテゴリに慣性があるか」とは別の問いで、施策に直結するのはむしろこちらです。
-`brandwise_test` はブランドごとに係数を置きます。
+`brandwise_test` はブランドごとに係数を置き、
 
 $$v_{hjt} = \alpha_{hj} + \gamma_j \cdot \mathbb{1}\lbrace j = y_{h,t-1} \rbrace + x_{hjt}'\beta,
 \qquad \gamma_j \sim N(\bar\gamma, \tau^2)$$
 
+順序シャッフルしたパネルにも同じモデルを当てて、**ブランドごとに専用のプラセボ**を作ります。
+
 ```julia
-r = brandwise_test(X)
-r.excess, r.verdicts
+r = brandwise_test(X)          # 入力の形は DHRTests と同じ
 ```
 
-**生の `gamma_j` の列をそのまま読んではいけません。** 真値が `(1.2, 0.8, 0.4, 0.0)`
+```
+Brand-wise state dependence
+============================================================================
+panel        : 800 households x 4 brands, 16000 occasions (15200 used)
+model        : HB multinomial logit, gamma_j ~ N(gamma-bar, tau^2),
+               each brand against its OWN order-shuffled placebo
+----------------------------------------------------------------------------
+do brands differ?   tau 0.565  vs placebo 0.058   P(>) = 0.995  -> yes
+                    tau 95% CI [0.290, 1.062]
+                    (DIC brandwise 30075.3  common 30233.3  delta -158.0 -- shown
+                     for reference only; DIC is not a test)
+----------------------------------------------------------------------------
+brand           share  lag occ    gamma  placebo    EXCESS  95% CI            P(>0)
+brand1          32.1%     4886    1.264    0.028    1.236  [  1.10,  1.36]  1.000 *
+brand2          27.4%     4168    0.805    0.010    0.795  [  0.66,  0.93]  1.000 *
+brand3          23.9%     3626    0.469    0.022    0.447  [  0.31,  0.59]  1.000 *
+brand4          16.7%     2520    0.051    0.015    0.036  [ -0.11,  0.18]  0.689
+----------------------------------------------------------------------------
+* state dependence at FDR 5%: brand1, brand2, brand3
+============================================================================
+```
+
+*(このパネルの真値は `gamma = (1.2, 0.8, 0.4, 0.0)`)*
+
+### 読み方
+
+**1. `do brands differ?` ── ここが no なら先は読まない。** `tau` はブランド係数の
+ばらつきで、同じ推定量が順序シャッフルしたパネル（全ブランドの真の係数が 0）で
+作り出すばらつきと比べます。`differ` が false なら、そのカテゴリの慣性は共通の
+`gamma` 1 本です。[`DHRTests`](#プラセボが検定の本体) を使い、ブランド別の分解は捨ててください。
+
+DIC も表示されますが、**判定には使っていません**。入れ子モデルで無意味なパラメータを
+足したとき `ΔDIC < 0` は半分くらいの確率で起きます ── `gamma = 0` のパネルで実測
+**誤検出 50%**、プラセボ比較では **0%** でした。
+
+**2. 読むのは `EXCESS` の列。生の `gamma` ではない。** 真値が `(1.2, 0.8, 0.4, 0.0)`
 のパネルに、異質性を無視してブランド別係数を当てると概ね `(1.96, 1.41, 1.35, 0.22)`
 が返ります。ブランド3 が +0.95、ブランド2 が +0.61 のバイアスを拾うため、
-**真値が 2 倍違う 2 つがほぼ同着**になる。しかも SE は 0.075 程度なので、
-その同着が「精度よく」見えます。だからブランドごとに**専用の順序シャッフルプラセボ**を
-当て、`EXCESS_j = gamma_j - placebo_j` を読みます。
+**真値が 2 倍違う 2 つがほぼ同着**になる。しかも SE は 0.075 程度なので、その同着が
+「精度よく」見えます。意味を持つのは `EXCESS_j = gamma_j − placebo_j` だけです。
 
-レポートは上から順に読みます。
+**3. `lag occ` ── その数字が何件に乗っているか。** `gamma_j` は「そのブランドが
+前回choiceだった機会」だけに乗るので、精度はシェアに比例します（実測で
+`SE ≈ 2.6/√n_lag`）。`min_lag`（既定 300）を下回るブランドは `:underpowered` です。
 
-**1. そもそもブランド間で違うのか。** `tau` はブランド係数のばらつきです。これを、
-同じ推定量が順序シャッフルしたパネル（全ブランドの真の係数が 0）で作り出すばらつきと
-比べます。**DIC では判定しません** ── 入れ子モデルで無意味なパラメータを足したとき
-`ΔDIC < 0` は半分くらいの確率で起きてしまい、実測で**誤検出率 50%** でした。
-プラセボ比較では同じパネルで **0%** です。
+`*` が付くのは、`EXCESS` の区間が 0 を跨がず、**かつ**ブランド横断のベイズ FDR
+（`fdr_q`）を通ったブランドだけです。`gamma = 0` のパネルでの実測は **3.1%**（目標 5%）。
 
-**2. どのブランドか。** ブランド別の判定は、`EXCESS_j` の区間が 0 を跨がないことと、
-ブランド横断のベイズ FDR（`fdr_q`）を通ることの**両方**を要求します。
-`gamma = 0` のパネルでの実測は **3.1%**（目標 5%）。
+### 結果の取り出し
 
-**3. その数字が何件のデータに乗っているか。** `gamma_j` は「そのブランドが前回choiceだった
-機会」だけに乗るので、精度はシェアに比例します（実測で `SE ≈ 2.6/√n_lag`）。
-`min_lag`（既定 300 機会）を下回るブランドは `:underpowered` と報告します。
-**「証拠がない」であって「効果がない」ではありません。**
+```julia
+r.differ                  # まずこれ
+r.tau, r.tau_placebo, r.p_tau
+r.excess, r.excess_ci     # 読むのはここ
+r.verdicts                # :state_dependence | :no_evidence | :underpowered
+r.gamma, r.placebo        # 内訳。gamma を単独で読まない
+r.lag_occasions, r.shares
+r.rhat, r.ess             # 何かを信じる前に確認する
 
-真値 `(1.2, 0.8, 0.4, 0.0)` のパネルでの復元:
+summarize(r)              # ブランドごとの NamedTuple の Vector
+posterior(r, 1)           # ブランド1 の EXCESS の draw を Distribution として
+posterior(r, "brand2")    # 名前でも引ける
+rand(posterior(r, 1), 1000)
+```
 
-| ブランド | シェア | ラグ機会 | gamma | プラセボ | EXCESS | 判定 |
-|---|---:|---:|---:|---:|---:|---|
-| brand1 | 32.1% | 4886 | 1.264 | 0.025 | **1.239** | `:state_dependence` |
-| brand2 | 27.4% | 4168 | 0.807 | 0.011 | **0.796** | `:state_dependence` |
-| brand3 | 23.9% | 3626 | 0.467 | 0.024 | **0.443** | `:state_dependence` |
-| brand4 | 16.7% | 2520 | 0.053 | 0.013 | **0.040** | `:no_evidence` |
+| 引数 | 既定 | 意味 |
+|---|---|---|
+| `fdr_q` | `0.05` | ブランド別判定のベイズ FDR 水準 |
+| `min_lag` | `300` | ラグ機会がこれ未満なら `:underpowered` |
+| `compare_common` | `true` | 共通 gamma モデルも当てる（DIC。参考表示のみ） |
+| `tau_scale` | `0.5` | `tau` の半正規事前分布のスケール |
+| `K`, `R`, `burnin`, `thin`, `nchains`, `level`, `covariates`, `brand_names`, `seed`, `verbose` | `DHRTests` と同じ | |
 
-*(`tau` 0.566 対 プラセボ 0.056、`P(>) = 0.996` ── ブランド間で違う。)*
+**計算コスト。** 当てはめが 3 本（ブランド別・そのプラセボ・比較用の共通 gamma）なので、
+`DHRTests` の約 3 倍を見てください。`compare_common = false` で 2 本になります
+（`differ` の判定はこの当てはめに依存しません）。
 
-**予算を動かす前に。** `gamma_j` は対数オッズなので、同じ係数でも確率の押し上げ幅は
-ベースシェアに依存します（シェア 40% 付近で最大）。**小ブランドが `EXCESS` の首位でも、
-投資先としては最悪かもしれません。** そして Levine & Seiler の警告は、集計係数より
-ブランド別のほうに強く効きます。この数字で予算を動かすなら、過去の販促に各ブランドが
-実際どう反応したかと突き合わせてください。
+### 注意事項
+
+* **`tau` はゼロになりません。** 標準偏差なので区間が 0 を含むことはなく、
+  「tau が有意」には意味がありません。判定を区間ではなく `P(tau > tau_placebo)` に
+  しているのはこのためです。
+* **`:underpowered` は `:no_evidence` ではありません。** 読む価値のある数字を出すには
+  ラグ機会が足りなかった、という意味です。**「効果がない」ではありません。**
+  ノイズだらけの係数を 4 本読むくらいなら、小ブランドを「その他」にまとめてから
+  当てるほうが実用的です。
+* **`rhat` と `ess` を確認してください。** パラメータが増えるぶん、スカラー版より
+  混合が遅くなります。`Rhat = 1.01` を超えるとレポートが警告するので、`R` を上げてください。
+* **`gamma_j` は対数オッズです。** 同じ係数でも確率の押し上げ幅はベースシェアに
+  依存します（シェア 40% 付近で最大）。**小ブランドが `EXCESS` の首位でも、
+  投資先としては最悪かもしれません。**
+* **カテゴリやデータセットをまたいで `gamma_j` を比べないでください。** 離散選択モデルで
+  識別されるのは `beta / sigma_error` という比だけなので、尺度はそのカテゴリの誤差分散で
+  決まります。同一の当てはめの中での比較は問題なく、この検定がやっているのはそれです。
+* **これはモデルベースであって実験ではありません。** Levine & Seiler (2023) は、
+  ボトル水の選択モデルが正の集計 `gamma` を返す一方で、ハリケーンの品切れを使った
+  自然実験では検出されないことを示しました。この警告は、係数を B 個に割ったものには
+  より強く効きます。この数字で予算を動かすなら、過去の販促に各ブランドが実際どう
+  反応したかと突き合わせてください。
 
 ## パネルではなく 1 世帯の長い履歴を使う: `mode = :single`
 
