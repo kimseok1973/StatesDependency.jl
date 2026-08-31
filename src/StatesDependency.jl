@@ -27,7 +27,7 @@ using Printf
 using Distributions
 using InverseFunctions
 
-export DHRTests, DHRTestResult, DHRSingleResult
+export DHRTests, DHRTestResult, DHRSingleResult, dic_status
 export brandwise_test, BrandwiseResult
 export PurchasePanel, build_panel, shuffle_panel, lagged_repeat_rate, choice_matrix
 export n_households, n_occasions, n_used, n_covariates

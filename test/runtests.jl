@@ -245,6 +245,46 @@ const FAST = (K = 2, R = 4_000, burnin = 1_500, thin = 2, nchains = 2, verbose =
         @test occursin("DHRTestResult", String(take!(io)))
     end
 
+    @testset "DIC caution" begin
+        sim = simulate_panel(H = 150, B = 3, T = 10, gamma = 0.8, seed = 25)
+        res = DHRTests(sim.X; K = 1, R = 2_500, burnin = 1_000, thin = 2,
+                       nchains = 1, verbose = false)
+
+        st = dic_status(res)
+        @test st in (:ok, :unresolved, :penalty_driven)
+        @test summarize(res).dic_status === st
+
+        io = IOBuffer(); show(io, MIME"text/plain"(), res)
+        out = String(take!(io))
+        @test occursin("pD", out)                        # the split is always shown
+        @test occursin("CAUTION", out) == (st !== :ok)   # the note appears iff needed
+
+        # the label agrees with its own definition
+        ps, p0 = res.fits.sd.p_D, res.fits.null.p_D
+        ddic = res.dic_sd - res.dic_nosd
+        dbar = (res.dic_sd - ps) - (res.dic_nosd - p0)
+        if st === :penalty_driven
+            @test (ddic > 0) != (dbar > 0)
+        elseif st === :unresolved
+            @test abs(ddic) < 0.10 * max(ps, p0)
+        else
+            @test (ddic > 0) == (dbar > 0)
+            @test abs(ddic) >= 0.10 * max(ps, p0)
+        end
+
+        # Dbar + pD must reconstruct the DIC that was reported
+        @test (res.dic_sd - ps) + ps ≈ res.dic_sd
+        @test occursin("Dbar", out)
+
+        # no nested fit -> nothing to compare, nothing to warn about
+        res2 = DHRTests(sim.X; K = 1, R = 1_500, burnin = 600, thin = 2,
+                        nchains = 1, placebo = false, compare_null = false,
+                        verbose = false)
+        @test dic_status(res2) === :na
+        io = IOBuffer(); show(io, MIME"text/plain"(), res2)
+        @test !occursin("CAUTION", String(take!(io)))
+    end
+
     @testset "covariates" begin
         sim = simulate_panel(H = 120, B = 3, T = 8, gamma = 0.6, seed = 24)
         rng = Xoshiro(24)

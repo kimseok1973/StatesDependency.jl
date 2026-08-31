@@ -43,7 +43,9 @@ placebo (order shuffled)     0.004   95% CI [ -0.131,   0.140]
 EXCESS  gamma - placebo      0.822   95% CI [  0.646,   0.997] *
   P(excess > 0)              1.000
 --------------------------------------------------------------------
-DIC   with SD     8021.4   without SD     8154.8   delta   -133.4
+DIC   with SD     8021.4  (Dbar    6902.1, pD   1119.3)
+      without      8154.8  (Dbar    7069.5, pD   1085.3)   delta -133.4
+log ML (Newton-Raftery, read with care)  -3517.4 vs -3602.9
 ====================================================================
 verdict: state_dependence
 ```
@@ -168,6 +170,11 @@ The verdict is `:state_dependence` only when all three agree — the $\gamma$ in
 excludes zero, the excess interval excludes zero, and DIC prefers the model with
 $\gamma$. Otherwise it is `:inconclusive` or `:no_evidence`.
 
+The third of those is the weak one. `:inconclusive` means $\gamma$ and the excess
+both cleared their thresholds but DIC did not agree, and DIC is often not in a
+position to have an opinion. The report says so when that happens — see
+[When not to trust the DIC](#when-not-to-trust-the-dic).
+
 ## Which brands have it: `brandwise_test`
 
 Whether inertia sits in one brand or spreads evenly across the category is a
@@ -192,8 +199,11 @@ model        : HB multinomial logit, gamma_j ~ N(gamma-bar, tau^2),
 ----------------------------------------------------------------------------
 do brands differ?   tau 0.565  vs placebo 0.058   P(>) = 0.995  -> yes
                     tau 95% CI [0.290, 1.062]
-                    (DIC brandwise 30075.3  common 30233.3  delta -158.0 -- shown
-                     for reference only; DIC is not a test)
+                    (DIC brandwise 30075.3 (pD 2044.7)  common 30233.3 (pD 1981.2)
+                     delta -158.0 -- reference only. DIC is NOT the test
+                     here: on nested models whose extra parameters are
+                     useless it picks the bigger model about half the
+                     time. The tau comparison above is the test.)
 ----------------------------------------------------------------------------
 brand           share  lag occ    gamma  placebo    EXCESS  95% CI            P(>0)
 brand1          32.1%     4886    1.264    0.028    1.236  [  1.10,  1.36]  1.000 *
@@ -553,9 +563,60 @@ of household `h`, aligned with the columns of `X[h]` **before** any column is dr
 * `choice prob. lift` — share-weighted change in choice probability, in percentage
   points. The number to quote to a non-technical audience.
 * `EXCESS` — the part that heterogeneity alone cannot reproduce. **Read this one.**
-* `DIC` — negative delta favours the state-dependence model.
+* `DIC` — negative delta favours the state-dependence model, *when the comparison
+  is in a position to say anything at all*. See below.
 * The Newton-Raftery log marginal likelihood is printed for completeness. It is a
   harmonic-mean estimator: a single bad draw dominates it. Never read it alone.
+
+### When not to trust the DIC
+
+The DIC computed here is **conditional** on the household intercepts, so the
+penalty `pD` counts the `H x (B-1)` intercepts alongside `gamma`. That makes it
+fragile in exactly the way that matters here: `gamma` and `alpha_h` compete to
+explain the same repeat purchases, so switching state dependence on widens the
+`alpha` posterior and inflates `pD`. Since `DIC = 2*Dbar - Dhat`, the total can
+move *against* the model that actually fits better.
+
+The report therefore prints the split — `Dbar` (mean deviance, the fit) and `pD`
+(the penalty) — and adds a `CAUTION` block when the comparison should not be
+read. `dic_status(res)` returns the same judgement as a `Symbol`:
+
+| status | meaning |
+|---|---|
+| `:ok` | `Dbar` and `DIC` agree on which model is better; read it as one more piece of evidence, and a weaker one than the placebo |
+| `:penalty_driven` | `Dbar` and `DIC` disagree, so the sign comes from the penalty rather than from fit. **Do not read it, in either direction.** |
+| `:unresolved` | `abs(delta DIC)` is small next to `pD` itself. The two fits also come from different seeds, so a difference this size is Monte Carlo noise. |
+| `:na` | `compare_null = false`, so there is nothing to compare |
+
+```julia
+res = DHRTests(X)
+dic_status(res)          # :penalty_driven
+summarize(res).dic_status
+```
+
+A `:penalty_driven` report looks like this:
+
+```
+DIC   with SD    19626.8  (Dbar   16011.3, pD   3615.5)
+      without    19574.5  (Dbar   16095.8, pD   3478.7)   delta +52.2
+log ML (Newton-Raftery, read with care)  -9106.8 vs -9072.2
+CAUTION: mean deviance favours the model with state dependence (-84.5)
+         while DIC goes the other way (+52.2), because pD moves by
+         +136.8. This is conditional DIC: gamma and the 723 household
+         intercepts compete for the same repeats, so switching gamma on
+         widens the alpha posterior and inflates the penalty. The sign
+         here is set by the penalty, not by fit -- do not read it as
+         evidence either way. Read EXCESS instead.
+         log ML above is a function of the same draws, so it is not an
+         independent second opinion.
+```
+
+Two things follow. First, `log ML` is **not** a second opinion that happens to
+agree: it is computed from the same `loglik` draws, by a harmonic-mean estimator
+whose value is dominated by the single worst-fitting draw. Second, a
+`:penalty_driven` or `:unresolved` status is the usual reason a run comes back
+`:inconclusive`; the verdict line says so, and in that case `gamma` and `EXCESS`
+are the evidence, not DIC.
 
 Always check `Rhat` and `ESS` before believing a result. A warning is printed when
 `Rhat > 1.01`; raise `R` or `nchains` if you see it.
@@ -914,15 +975,68 @@ excess = γ − γ_placebo
 判定が `:state_dependence` になるのは、γ の区間が 0 を除き、excess の区間も 0 を除き、
 かつ DIC が状態依存モデルを選んだときだけです。
 
+この 3 番目が弱い条件です。`:inconclusive` は「γ も excess も閾値を超えたが DIC だけが
+同意しなかった」という状態を指しますが、そもそも DIC が意見を言える状態にないことが
+よくあります。その場合はレポートがそう述べます ──
+[DIC を信用してはいけないとき](#dic-を信用してはいけないとき) を参照してください。
+
 ## 出力の読み方
 
 * `gamma` … 前回購買がもたらす対数オッズの押し上げ
 * `odds ratio` … `exp(γ)`。選択オッズが何倍になるか
 * `choice prob. lift` … 選択確率の変化（シェア加重、%pt）。非専門家に出す数字
 * `EXCESS` … 異質性だけでは再現できない部分。**ここを読む**
-* `DIC` … 負なら状態依存モデルが優位
+* `DIC` … 負なら状態依存モデルが優位。ただし**その比較が意味を持つ場合に限ります**。下記参照
 * Newton-Raftery の対数周辺尤度は参考値です。調和平均推定量なので単一の悪い draw に
   支配されます。**単独で読まないこと**
+
+### DIC を信用してはいけないとき
+
+ここで計算している DIC は世帯別切片に**条件付けた** conditional DIC で、罰則項 `pD` は
+γ だけでなく `H x (B-1)` 個の切片も数えています。これがまさに問題になる形で脆い。
+γ と α_h は同じ「繰り返し購買」を奪い合うので、状態依存を入れると α の事後分布が広がり
+`pD` が膨らみます。`DIC = 2*Dbar - Dhat` なので、**当てはまりが良いほうのモデルに対して
+DIC が不利に動く**ことが起こります。
+
+そこでレポートは内訳 ── `Dbar`（平均逸脱度＝当てはまり）と `pD`（罰則）── を分けて表示し、
+読んではいけない場合には `CAUTION` を添えます。同じ判断は `dic_status(res)` が
+`Symbol` で返します。
+
+| status | 意味 |
+|---|---|
+| `:ok` | `Dbar` と `DIC` がどちらのモデルを支持するかで一致している。証拠として読んでよい（ただしプラセボより弱い） |
+| `:penalty_driven` | `Dbar` と `DIC` が食い違っており、符号は当てはまりではなく罰則で決まっている。**どちら向きにも読んではいけません** |
+| `:unresolved` | `abs(ΔDIC)` が `pD` 自体に比べて小さい。2 つの当てはめは別シードで走っているので、この程度の差はモンテカルロ誤差 |
+| `:na` | `compare_null = false` なので比較対象がない |
+
+```julia
+res = DHRTests(X)
+dic_status(res)          # :penalty_driven
+summarize(res).dic_status
+```
+
+`:penalty_driven` のレポートはこう出ます。
+
+```
+DIC   with SD    19626.8  (Dbar   16011.3, pD   3615.5)
+      without    19574.5  (Dbar   16095.8, pD   3478.7)   delta +52.2
+log ML (Newton-Raftery, read with care)  -9106.8 vs -9072.2
+CAUTION: mean deviance favours the model with state dependence (-84.5)
+         while DIC goes the other way (+52.2), because pD moves by
+         +136.8. This is conditional DIC: gamma and the 723 household
+         intercepts compete for the same repeats, so switching gamma on
+         widens the alpha posterior and inflates the penalty. The sign
+         here is set by the penalty, not by fit -- do not read it as
+         evidence either way. Read EXCESS instead.
+         log ML above is a function of the same draws, so it is not an
+         independent second opinion.
+```
+
+ここから 2 つ言えます。第一に、`log ML` は「たまたま一致した second opinion」では
+**ありません**。同じ `loglik` の draw から、しかも最も当てはまりの悪い 1 draw に
+支配される調和平均推定量で計算しているので、独立な証拠として数えられません。
+第二に、`:inconclusive` が出る通常の原因が `:penalty_driven` か `:unresolved` です。
+その場合は判定行にもその旨が出ます。証拠は γ と EXCESS のほうであって、DIC ではありません。
 
 `Rhat` と `ESS` は必ず確認してください。`Rhat > 1.01` のときは警告が出ます。
 
@@ -1004,8 +1118,11 @@ model        : HB multinomial logit, gamma_j ~ N(gamma-bar, tau^2),
 ----------------------------------------------------------------------------
 do brands differ?   tau 0.565  vs placebo 0.058   P(>) = 0.995  -> yes
                     tau 95% CI [0.290, 1.062]
-                    (DIC brandwise 30075.3  common 30233.3  delta -158.0 -- shown
-                     for reference only; DIC is not a test)
+                    (DIC brandwise 30075.3 (pD 2044.7)  common 30233.3 (pD 1981.2)
+                     delta -158.0 -- reference only. DIC is NOT the test
+                     here: on nested models whose extra parameters are
+                     useless it picks the bigger model about half the
+                     time. The tau comparison above is the test.)
 ----------------------------------------------------------------------------
 brand           share  lag occ    gamma  placebo    EXCESS  95% CI            P(>0)
 brand1          32.1%     4886    1.264    0.028    1.236  [  1.10,  1.36]  1.000 *

@@ -294,9 +294,14 @@ function Base.show(io::IO, ::MIME"text/plain", r::BrandwiseResult)
     @printf(io, "                    tau %d%% CI [%.3f, %.3f]\n",
             pct, r.tau_ci[1], r.tau_ci[2])
     if r.delta_dic !== nothing
-        @printf(io, "                    (DIC brandwise %.1f  common %.1f  delta %+.1f -- shown\n",
-                r.dic_brandwise, r.dic_common, r.delta_dic)
-        println(io, "                     for reference only; DIC is not a test)")
+        ps, p0 = r.fits.sd.p_D, r.fits.common.p_D
+        @printf(io, "                    (DIC brandwise %.1f (pD %.1f)  common %.1f (pD %.1f)\n",
+                r.dic_brandwise, ps, r.dic_common, p0)
+        @printf(io, "                     delta %+.1f -- reference only. DIC is NOT the test\n",
+                r.delta_dic)
+        println(io, "                     here: on nested models whose extra parameters are")
+        println(io, "                     useless it picks the bigger model about half the")
+        println(io, "                     time. The tau comparison above is the test.)")
     end
     println(io, "-" ^ 76)
 

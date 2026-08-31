@@ -21,7 +21,9 @@ Key fields
   quantity to read: it is the part of the lagged-choice effect that cannot be
   reproduced by heterogeneity alone.
 - `dic_sd`, `dic_nosd`, `delta_dic` : model comparison against the nested model
-  without state dependence.
+  without state dependence. Read [`dic_status`](@ref) before using these: the
+  DIC here is conditional on the household intercepts and its sign is often set
+  by the penalty rather than by fit.
 - `verdict` : `:state_dependence`, `:inconclusive` or `:no_evidence`.
 """
 struct DHRTestResult
@@ -355,6 +357,73 @@ end
 
 _stars(lo, hi) = (lo > 0 || hi < 0) ? "*" : " "
 
+# ---------------------------------------------------------------------------
+# how much weight can the DIC comparison carry?
+# ---------------------------------------------------------------------------
+
+"""
+    dic_status(r::DHRTestResult)
+
+Whether the DIC comparison in `r` is worth reading, as a `Symbol`.
+
+The DIC computed here is *conditional* on the household intercepts, so its
+penalty term `pD` counts the `H x (B-1)` intercepts as well as `gamma`. That
+makes it fragile in exactly the way that matters: `gamma` and `alpha_h` compete
+to explain the same repeat purchases, so switching state dependence on widens
+the `alpha` posterior and inflates `pD`. Since `DIC = 2*Dbar - Dhat`, the total
+can move against the model that actually fits better.
+
+- `:na` -- no nested fit to compare against (`compare_null = false`).
+- `:penalty_driven` -- `Dbar` and `DIC` disagree about which model is better,
+  so the sign is set by the penalty rather than by fit. Do not read it.
+- `:unresolved` -- `|delta DIC|` is small next to `pD` itself. The two fits also
+  come from different seeds, so a difference this size is Monte Carlo noise.
+- `:ok` -- neither pathology applies. Still only one piece of evidence, and a
+  weaker one than the placebo.
+
+Note that `log ML` is computed from the same draws as `DIC` (and by the harmonic
+mean estimator, which has infinite variance and is dominated by the single
+worst-fitting draw). The two agreeing is not a second opinion.
+"""
+function dic_status(r::DHRTestResult)
+    r.dic_nosd === nothing && return :na
+    ps, p0 = r.fits.sd.p_D, r.fits.null.p_D
+    ddic = r.dic_sd - r.dic_nosd
+    dbar = (r.dic_sd - ps) - (r.dic_nosd - p0)
+    (ddic > 0) != (dbar > 0) && return :penalty_driven
+    abs(ddic) < 0.10 * max(ps, p0) && return :unresolved
+    return :ok
+end
+
+function _dic_caution(io::IO, r::DHRTestResult)
+    st = dic_status(r)
+    (st === :ok || st === :na) && return nothing
+    ps, p0 = r.fits.sd.p_D, r.fits.null.p_D
+    ddic = r.delta_dic
+    dbar = (r.dic_sd - ps) - (r.dic_nosd - p0)
+    if st === :penalty_driven
+        better = dbar < 0 ? "with" : "without"
+        @printf(io, "CAUTION: mean deviance favours the model %s state dependence (%+.1f)\n",
+                better, dbar)
+        @printf(io, "         while DIC goes the other way (%+.1f), because pD moves by\n",
+                ddic)
+        @printf(io, "         %+.1f. This is conditional DIC: gamma and the %d household\n",
+                ps - p0, r.n_households)
+        println(io, "         intercepts compete for the same repeats, so switching gamma on")
+        println(io, "         widens the alpha posterior and inflates the penalty. The sign")
+        println(io, "         here is set by the penalty, not by fit -- do not read it as")
+        println(io, "         evidence either way. Read EXCESS instead.")
+    else
+        @printf(io, "CAUTION: |delta DIC| (%.1f) is small next to pD itself (%.1f), and the\n",
+                abs(ddic), max(ps, p0))
+        println(io, "         two models were run from different seeds, so a difference this")
+        println(io, "         size is Monte Carlo noise. Do not let it decide the verdict.")
+    end
+    println(io, "         log ML above is a function of the same draws, so it is not an")
+    println(io, "         independent second opinion.")
+    return nothing
+end
+
 function Base.show(io::IO, ::MIME"text/plain", r::DHRTestResult)
     pct = round(Int, 100 * r.level)
     println(io, "State dependence test  (Dube, Hitsch & Rossi 2010)")
@@ -387,10 +456,14 @@ function Base.show(io::IO, ::MIME"text/plain", r::DHRTestResult)
     end
     if r.dic_nosd !== nothing
         println(io, "-" ^ 68)
-        @printf(io, "DIC   with SD %10.1f   without SD %10.1f   delta %+8.1f\n",
-                r.dic_sd, r.dic_nosd, r.delta_dic)
+        ps, p0 = r.fits.sd.p_D, r.fits.null.p_D
+        @printf(io, "DIC   with SD %10.1f  (Dbar %9.1f, pD %8.1f)\n",
+                r.dic_sd, r.dic_sd - ps, ps)
+        @printf(io, "      without  %10.1f  (Dbar %9.1f, pD %8.1f)   delta %+.1f\n",
+                r.dic_nosd, r.dic_nosd - p0, p0, r.delta_dic)
         @printf(io, "log ML (Newton-Raftery, read with care)  %.1f vs %.1f\n",
                 r.lml_sd, r.lml_nosd)
+        _dic_caution(io, r)
     end
     if !isempty(r.beta_mean)
         println(io, "-" ^ 68)
@@ -407,6 +480,16 @@ function Base.show(io::IO, ::MIME"text/plain", r::DHRTestResult)
             "no evidence: heterogeneity alone reproduces the observed inertia" :
             "inconclusive: gamma is positive but the model comparison does not agree"
     @printf(io, "verdict: %s\n         %s\n", r.verdict, msg)
+    if r.verdict === :inconclusive
+        st = dic_status(r)
+        if st === :penalty_driven || st === :unresolved
+            @printf(io, "         NOTE: that disagreement is the DIC comparison alone, and it\n")
+            @printf(io, "         is %s here (see CAUTION above). gamma and EXCESS\n",
+                    st === :penalty_driven ? "penalty-driven" : "unresolved")
+            println(io, "         both clear their thresholds, so the evidence for state")
+            println(io, "         dependence is not actually in dispute.")
+        end
+    end
     if !isnan(r.gamma_rhat) && r.gamma_rhat > 1.01
         println(io, "WARNING: Rhat > 1.01 -- increase R or nchains before believing this.")
     end
@@ -434,6 +517,7 @@ function summarize(r::DHRTestResult)
               excess_lo = r.excess_ci === nothing ? NaN : r.excess_ci[1],
               excess_hi = r.excess_ci === nothing ? NaN : r.excess_ci[2],
               delta_dic = r.delta_dic === nothing ? NaN : r.delta_dic,
+              dic_status = dic_status(r),
               rhat = r.gamma_rhat, ess = r.gamma_ess, verdict = r.verdict)
 end
 
