@@ -53,6 +53,9 @@ verdict: state_dependence
 
 ---
 
+See [`docs/procedure.md`](docs/procedure.md) for flowcharts of all three
+procedures — panel, single history, and by brand — and of where DIC sits.
+
 ## Installation
 
 ```julia
@@ -892,6 +895,9 @@ Julia パッケージです。[Dubé, Hitsch & Rossi (2010)](https://onlinelibra
 もあります。固定効果条件付きロジット ＋ 窓内シャッフル null に加えて、
 [定常性の事前検定](#仮定を置くのではなく検定する-p_stationarity)が入っており、
 **嗜好が動いているだけの世帯を「慣性あり」と判定しない**ようになっています。
+
+3 つの手続き（パネル / 単一世帯 / ブランド別）と DIC の位置づけをフローチャートに
+したものが [`docs/procedure.md`](docs/procedure.md) にあります。
 
 ## 使い方
 
