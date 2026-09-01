@@ -46,6 +46,7 @@ EXCESS  gamma - placebo      0.822   95% CI [  0.646,   0.997] *
 DIC   with SD     8021.4  (Dbar    6902.1, pD   1119.3)
       without      8154.8  (Dbar    7069.5, pD   1085.3)   delta -133.4
 log ML (Newton-Raftery, read with care)  -3517.4 vs -3602.9
+      (conditional DIC -- reference only, never the test; see dic_status)
 ====================================================================
 verdict: state_dependence
 ```
@@ -166,14 +167,13 @@ excess = gamma - gamma_placebo
 and the verdict requires its credible interval to exclude zero. In our own replication
 on a beer panel this mattered a lot: $\gamma = 0.65$ against a placebo of $0.11$.
 
-The verdict is `:state_dependence` only when all three agree — the $\gamma$ interval
-excludes zero, the excess interval excludes zero, and DIC prefers the model with
-$\gamma$. Otherwise it is `:inconclusive` or `:no_evidence`.
+The verdict is `:state_dependence` when both intervals exclude zero — the $\gamma$
+interval and the excess interval — and `:no_evidence` when either covers it. It is
+`:inconclusive` only when `placebo = false`, because without the placebo the two
+explanations cannot be separated at all.
 
-The third of those is the weak one. `:inconclusive` means $\gamma$ and the excess
-both cleared their thresholds but DIC did not agree, and DIC is often not in a
-position to have an opinion. The report says so when that happens — see
-[When not to trust the DIC](#when-not-to-trust-the-dic).
+DIC is reported but **does not enter the verdict**. It used to, and that was a
+defect: see [When not to trust the DIC](#when-not-to-trust-the-dic).
 
 ## Which brands have it: `brandwise_test`
 
@@ -570,53 +570,83 @@ of household `h`, aligned with the columns of `X[h]` **before** any column is dr
 
 ### When not to trust the DIC
 
-The DIC computed here is **conditional** on the household intercepts, so the
-penalty `pD` counts the `H x (B-1)` intercepts alongside `gamma`. That makes it
-fragile in exactly the way that matters here: `gamma` and `alpha_h` compete to
-explain the same repeat purchases, so switching state dependence on widens the
-`alpha` posterior and inflates `pD`. Since `DIC = 2*Dbar - Dhat`, the total can
-move *against* the model that actually fits better.
+Short answer: never as the test. The report says so on every run, and
+`dic_status(res)` says why.
 
-The report therefore prints the split — `Dbar` (mean deviance, the fit) and `pD`
-(the penalty) — and adds a `CAUTION` block when the comparison should not be
-read. `dic_status(res)` returns the same judgement as a `Symbol`:
+The DIC computed here is **conditional** on the household intercepts — the
+likelihood it averages is `p(y | alpha_h, gamma)`, not the marginal likelihood
+with `alpha` integrated out. Conditional DIC is known to misbehave when the
+models being compared differ in their latent structure (Celeux, Forbes, Robert &
+Titterington 2006), and here it misbehaves in a specific direction.
+
+`gamma` and `alpha_h` compete to explain the same repeat purchases. Switching
+state dependence on therefore *shrinks* the `alpha` posterior: on simulated
+panels the average spread of the household intercepts fell from 0.93 to 0.74.
+Less spread means less in-sample overfitting by `alpha`, which **raises** `Dbar`.
+So conditional DIC rewards whichever model lets `alpha` absorb more — and that is
+the `gamma = 0` model, by construction.
+
+The size of it, on ten simulated panels with a true `gamma` of 0.6
+(H = 400, B = 5, T = 14, `K = 2`):
+
+| | correct |
+|---|---|
+| EXCESS interval excludes zero | 10 / 10 |
+| `Dbar` favours the state-dependence model | **0 / 10** |
+| `pD` larger under state dependence | **0 / 10** |
+| `delta DIC` picks the right model | 9 / 10 |
+
+`Dbar` never once favoured the true model. `delta DIC` still landed the right way
+9 times out of 10 only because the shrinking `pD` happened to outrun the rising
+`Dbar` — that is luck, not a working criterion. This is why the verdict does not
+use it.
+
+The report prints the split — `Dbar` (mean deviance, the fit) and `pD` (the
+penalty) — plus a permanent reference-only line, and adds a `CAUTION` block when
+the comparison is worse than merely weak. `dic_status(res)` returns:
 
 | status | meaning |
 |---|---|
-| `:ok` | `Dbar` and `DIC` agree on which model is better; read it as one more piece of evidence, and a weaker one than the placebo |
-| `:penalty_driven` | `Dbar` and `DIC` disagree, so the sign comes from the penalty rather than from fit. **Do not read it, in either direction.** |
-| `:unresolved` | `abs(delta DIC)` is small next to `pD` itself. The two fits also come from different seeds, so a difference this size is Monte Carlo noise. |
-| `:na` | `compare_null = false`, so there is nothing to compare |
+| `:ok` | none of the below. Still reference only |
+| `:penalty_driven` | `Dbar` and `DIC` disagree on which model is better, so the sign comes from the penalty rather than from fit |
+| `:contradicts_excess` | EXCESS excludes zero yet DIC prefers the null. This is the configuration the bias above produces; it says nothing. Checked *before* `:unresolved`, so that "Monte Carlo error" never reads as "more draws would settle it" |
+| `:unresolved` | `abs(delta DIC)` is inside Monte Carlo error — twice `dic_mcse(res)`, which ignores that the two fits use different seeds on top of that |
+| `:na` | `compare_null = false`, nothing to compare |
 
 ```julia
 res = DHRTests(X)
-dic_status(res)          # :penalty_driven
+dic_status(res)          # :contradicts_excess
+dic_mcse(res)            # approximate MCSE of delta_dic
 summarize(res).dic_status
 ```
 
-A `:penalty_driven` report looks like this:
+A `:contradicts_excess` report looks like this:
 
 ```
-DIC   with SD    19626.8  (Dbar   16011.3, pD   3615.5)
-      without    19574.5  (Dbar   16095.8, pD   3478.7)   delta +52.2
+DIC   with SD    19626.8  (Dbar   17988.4, pD   1638.4)
+      without    19574.5  (Dbar   17908.9, pD   1665.6)   delta +52.2
 log ML (Newton-Raftery, read with care)  -9106.8 vs -9072.2
-CAUTION: mean deviance favours the model with state dependence (-84.5)
-         while DIC goes the other way (+52.2), because pD moves by
-         +136.8. This is conditional DIC: gamma and the 723 household
-         intercepts compete for the same repeats, so switching gamma on
-         widens the alpha posterior and inflates the penalty. The sign
-         here is set by the penalty, not by fit -- do not read it as
-         evidence either way. Read EXCESS instead.
+      (conditional DIC -- reference only, never the test; see dic_status)
+CAUTION: EXCESS excludes zero but DIC prefers the model WITHOUT state
+         dependence. That pairing is what this DIC produces by design, not
+         a finding: being conditional on the household intercepts, it
+         rewards whichever model lets alpha absorb more of the repeat
+         purchasing -- the gamma = 0 model. It shows in Dbar (+79.5), not
+         in the penalty (pD -27.2). On simulated panels with a true gamma
+         of 0.6 this comparison picked the wrong model in 1 run out of 10
+         while EXCESS was right in 10 of 10. Read EXCESS.
          log ML above is a function of the same draws, so it is not an
          independent second opinion.
 ```
 
-Two things follow. First, `log ML` is **not** a second opinion that happens to
-agree: it is computed from the same `loglik` draws, by a harmonic-mean estimator
-whose value is dominated by the single worst-fitting draw. Second, a
-`:penalty_driven` or `:unresolved` status is the usual reason a run comes back
-`:inconclusive`; the verdict line says so, and in that case `gamma` and `EXCESS`
-are the evidence, not DIC.
+One more trap: `log ML` is **not** a second opinion that happens to agree. It is
+computed from the same `loglik` draws, by a harmonic-mean estimator whose value
+is dominated by the single worst-fitting draw. When DIC and `log ML` point the
+same way, that is one piece of evidence, not two.
+
+If you want a model comparison that is actually valid here, it has to integrate
+`alpha_h` out — marginal WAIC or PSIS-LOO on the household-level predictive
+density. That is not implemented; the placebo is.
 
 Always check `Rhat` and `ESS` before believing a result. A warning is printed when
 `Rhat > 1.01`; raise `R` or `nchains` if you see it.
@@ -972,12 +1002,11 @@ excess = γ − γ_placebo
 で、この区間が 0 を跨がないことを判定の必要条件にしています。
 実際、手元のビールパネルの再現では γ = 0.65 に対してプラセボが 0.11 でした。
 
-判定が `:state_dependence` になるのは、γ の区間が 0 を除き、excess の区間も 0 を除き、
-かつ DIC が状態依存モデルを選んだときだけです。
+判定が `:state_dependence` になるのは、γ の区間と excess の区間がともに 0 を除いたとき、
+`:no_evidence` はどちらかが 0 を含むときです。`:inconclusive` は `placebo = false` の
+ときだけで、プラセボが無ければ 2 つの説明をそもそも分離できないからです。
 
-この 3 番目が弱い条件です。`:inconclusive` は「γ も excess も閾値を超えたが DIC だけが
-同意しなかった」という状態を指しますが、そもそも DIC が意見を言える状態にないことが
-よくあります。その場合はレポートがそう述べます ──
+DIC は表示しますが**判定には入れていません**。以前は入れていましたが、それは欠陥でした ──
 [DIC を信用してはいけないとき](#dic-を信用してはいけないとき) を参照してください。
 
 ## 出力の読み方
@@ -992,51 +1021,81 @@ excess = γ − γ_placebo
 
 ### DIC を信用してはいけないとき
 
-ここで計算している DIC は世帯別切片に**条件付けた** conditional DIC で、罰則項 `pD` は
-γ だけでなく `H x (B-1)` 個の切片も数えています。これがまさに問題になる形で脆い。
-γ と α_h は同じ「繰り返し購買」を奪い合うので、状態依存を入れると α の事後分布が広がり
-`pD` が膨らみます。`DIC = 2*Dbar - Dhat` なので、**当てはまりが良いほうのモデルに対して
-DIC が不利に動く**ことが起こります。
+結論から言うと、**検定としては一度も信用してはいけません**。レポートは毎回その旨を
+表示し、`dic_status(res)` が理由を返します。
 
-そこでレポートは内訳 ── `Dbar`（平均逸脱度＝当てはまり）と `pD`（罰則）── を分けて表示し、
-読んではいけない場合には `CAUTION` を添えます。同じ判断は `dic_status(res)` が
-`Symbol` で返します。
+ここで計算している DIC は世帯別切片に**条件付けた** conditional DIC です。平均している
+尤度は `p(y | alpha_h, gamma)` であって、α を積分消去した周辺尤度ではありません。
+conditional DIC は、比較する 2 つのモデルが潜在構造の点で異なるとき挙動が悪いことが
+知られており (Celeux, Forbes, Robert & Titterington 2006)、しかもここでは**特定の向きに**
+悪くなります。
+
+γ と α_h は同じ「繰り返し購買」を奪い合います。したがって状態依存を入れると α の
+事後分布は広がるどころか**縮みます** ── シミュレーションでは世帯別切片の平均的な
+広がりが 0.93 から 0.74 に落ちました。広がりが小さいということは α による標本内の
+当てはめ余地が減るということで、`Dbar` は**悪化**します。つまり conditional DIC は
+「α により多く吸わせるモデル」を有利に評価し、それは構成上 `gamma = 0` のほうです。
+
+真の γ = 0.6 を与えた 10 本のシミュレーションパネル (H = 400, B = 5, T = 14, `K = 2`) での
+実測値です。
+
+| | 正解した回数 |
+|---|---|
+| EXCESS の区間が 0 を除外 | 10 / 10 |
+| `Dbar` が状態依存モデルを支持 | **0 / 10** |
+| `pD` が状態依存モデルで増加 | **0 / 10** |
+| `ΔDIC` が正しいモデルを選択 | 9 / 10 |
+
+`Dbar` は一度も真のモデルを支持しませんでした。`ΔDIC` が 10 回中 9 回正しかったのは、
+縮む `pD` が上がる `Dbar` をたまたま上回ったからにすぎません。運であって、基準として
+機能しているわけではない。判定に使わない理由がこれです。
+
+レポートは内訳 ── `Dbar`（平均逸脱度＝当てはまり）と `pD`（罰則）── を分けて表示し、
+「参考表示に過ぎない」旨を常時 1 行出し、単に弱いでは済まない場合に `CAUTION` を
+添えます。`dic_status(res)` の戻り値は次のとおりです。
 
 | status | 意味 |
 |---|---|
-| `:ok` | `Dbar` と `DIC` がどちらのモデルを支持するかで一致している。証拠として読んでよい（ただしプラセボより弱い） |
-| `:penalty_driven` | `Dbar` と `DIC` が食い違っており、符号は当てはまりではなく罰則で決まっている。**どちら向きにも読んではいけません** |
-| `:unresolved` | `abs(ΔDIC)` が `pD` 自体に比べて小さい。2 つの当てはめは別シードで走っているので、この程度の差はモンテカルロ誤差 |
-| `:na` | `compare_null = false` なので比較対象がない |
+| `:ok` | 以下のいずれにも当たらない。それでも参考表示 |
+| `:penalty_driven` | `Dbar` と `DIC` がどちらのモデルを支持するかで食い違う。符号は当てはまりではなく罰則で決まっている |
+| `:contradicts_excess` | EXCESS が 0 を除外しているのに DIC は状態依存なしを選んでいる。上記のバイアスが作り出す配置そのもので、何も言っていない。`:unresolved` より**先に**判定します ── 「モンテカルロ誤差の内側」が「draw を増やせば決着する」と読まれるのを防ぐためです |
+| `:unresolved` | `abs(ΔDIC)` がモンテカルロ誤差の内側（`dic_mcse(res)` の 2 倍。しかもこれは 2 つの当てはめが別シードであることを勘定に入れていない） |
+| `:na` | `compare_null = false` で比較対象がない |
 
 ```julia
 res = DHRTests(X)
-dic_status(res)          # :penalty_driven
+dic_status(res)          # :contradicts_excess
+dic_mcse(res)            # ΔDIC のおおよその MCSE
 summarize(res).dic_status
 ```
 
-`:penalty_driven` のレポートはこう出ます。
+`:contradicts_excess` のレポートはこう出ます。
 
 ```
-DIC   with SD    19626.8  (Dbar   16011.3, pD   3615.5)
-      without    19574.5  (Dbar   16095.8, pD   3478.7)   delta +52.2
+DIC   with SD    19626.8  (Dbar   17988.4, pD   1638.4)
+      without    19574.5  (Dbar   17908.9, pD   1665.6)   delta +52.2
 log ML (Newton-Raftery, read with care)  -9106.8 vs -9072.2
-CAUTION: mean deviance favours the model with state dependence (-84.5)
-         while DIC goes the other way (+52.2), because pD moves by
-         +136.8. This is conditional DIC: gamma and the 723 household
-         intercepts compete for the same repeats, so switching gamma on
-         widens the alpha posterior and inflates the penalty. The sign
-         here is set by the penalty, not by fit -- do not read it as
-         evidence either way. Read EXCESS instead.
+      (conditional DIC -- reference only, never the test; see dic_status)
+CAUTION: EXCESS excludes zero but DIC prefers the model WITHOUT state
+         dependence. That pairing is what this DIC produces by design, not
+         a finding: being conditional on the household intercepts, it
+         rewards whichever model lets alpha absorb more of the repeat
+         purchasing -- the gamma = 0 model. It shows in Dbar (+79.5), not
+         in the penalty (pD -27.2). On simulated panels with a true gamma
+         of 0.6 this comparison picked the wrong model in 1 run out of 10
+         while EXCESS was right in 10 of 10. Read EXCESS.
          log ML above is a function of the same draws, so it is not an
          independent second opinion.
 ```
 
-ここから 2 つ言えます。第一に、`log ML` は「たまたま一致した second opinion」では
-**ありません**。同じ `loglik` の draw から、しかも最も当てはまりの悪い 1 draw に
-支配される調和平均推定量で計算しているので、独立な証拠として数えられません。
-第二に、`:inconclusive` が出る通常の原因が `:penalty_driven` か `:unresolved` です。
-その場合は判定行にもその旨が出ます。証拠は γ と EXCESS のほうであって、DIC ではありません。
+もう一つの罠。`log ML` は「たまたま一致した second opinion」では**ありません**。同じ
+`loglik` の draw から、しかも最も当てはまりの悪い 1 draw に支配される調和平均推定量で
+計算しています。DIC と `log ML` が同じ向きを指しても、それは 1 つの証拠であって
+2 つではありません。
+
+ここで本当に有効なモデル比較が欲しければ、α_h を積分消去する必要があります ──
+世帯レベルの予測密度に対する周辺 WAIC か PSIS-LOO です。それは実装していません。
+プラセボが実装してある代わりです。
 
 `Rhat` と `ESS` は必ず確認してください。`Rhat > 1.01` のときは警告が出ます。
 

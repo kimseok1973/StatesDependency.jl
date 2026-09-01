@@ -33,7 +33,7 @@ end
 
 Effective sample size for a `ndraws x nchains` matrix, using Geyer's initial
 positive sequence on the chain-averaged autocorrelation (the same construction
-Stan uses).
+Stan uses). A single chain is allowed: the between-chain term is then zero.
 """
 function ess(X::AbstractMatrix{<:Real})
     nd, nc = size(X)
@@ -43,7 +43,9 @@ function ess(X::AbstractMatrix{<:Real})
     vars  = [var(view(Y, :, c)) for c in 1:nc]
     W = mean(vars)
     W <= 0 && return NaN
-    Bn = nd * var(means)
+    # With one chain there is no between-chain variance to add; var() of a
+    # single mean is NaN, which would poison everything downstream.
+    Bn = nc > 1 ? nd * var(means) : 0.0
     varplus = ((nd - 1) * W + Bn) / nd
 
     maxlag = min(nd - 2, 500)

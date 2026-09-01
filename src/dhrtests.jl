@@ -21,10 +21,12 @@ Key fields
   quantity to read: it is the part of the lagged-choice effect that cannot be
   reproduced by heterogeneity alone.
 - `dic_sd`, `dic_nosd`, `delta_dic` : model comparison against the nested model
-  without state dependence. Read [`dic_status`](@ref) before using these: the
-  DIC here is conditional on the household intercepts and its sign is often set
-  by the penalty rather than by fit.
-- `verdict` : `:state_dependence`, `:inconclusive` or `:no_evidence`.
+  without state dependence, **for reference only**. This DIC is conditional on
+  the household intercepts, which biases it toward the model without state
+  dependence; see [`dic_status`](@ref). It does not enter `verdict`.
+- `verdict` : `:state_dependence` when both the `gamma` interval and the EXCESS
+  interval exclude zero, `:no_evidence` when either covers it, `:inconclusive`
+  when the placebo was not run and the two explanations cannot be separated.
 """
 struct DHRTestResult
     n_brands::Int
@@ -296,13 +298,20 @@ function DHRTests(X;
         end
     end
 
+    # The verdict rests on gamma and on the placebo, and on nothing else. DIC is
+    # reported but does not gate it: the DIC available here is conditional on the
+    # household intercepts, which makes it favour whichever model lets alpha
+    # absorb more of the repeat purchasing -- the gamma = 0 model by
+    # construction. On simulated panels with a true gamma of 0.6 it picked the
+    # wrong model in 1 run out of 10 while the placebo was right in 10 out of 10.
+    # See `dic_status`.
     ci_excludes_zero = gci[1] > 0 || gci[2] < 0
     verdict = if !ci_excludes_zero
         :no_evidence
-    elseif fit_pl !== nothing && !(excci[1] > 0 || excci[2] < 0)
+    elseif fit_pl === nothing
+        :inconclusive          # without a placebo the two stories cannot be split
+    elseif !(excci[1] > 0 || excci[2] < 0)
         :no_evidence
-    elseif fit_null !== nothing && ddic >= 0
-        :inconclusive
     else
         :state_dependence
     end
@@ -366,20 +375,35 @@ _stars(lo, hi) = (lo > 0 || hi < 0) ? "*" : " "
 
 Whether the DIC comparison in `r` is worth reading, as a `Symbol`.
 
-The DIC computed here is *conditional* on the household intercepts, so its
-penalty term `pD` counts the `H x (B-1)` intercepts as well as `gamma`. That
-makes it fragile in exactly the way that matters: `gamma` and `alpha_h` compete
-to explain the same repeat purchases, so switching state dependence on widens
-the `alpha` posterior and inflates `pD`. Since `DIC = 2*Dbar - Dhat`, the total
-can move against the model that actually fits better.
+The DIC computed here is *conditional* on the household intercepts: the
+likelihood it averages is `p(y | alpha_h, gamma)`, not the marginal likelihood
+with `alpha` integrated out. Conditional DIC is known to behave badly when the
+models being compared differ in their latent structure (Celeux, Forbes, Robert &
+Titterington 2006), and it does so here in a specific direction. `gamma` and
+`alpha_h` compete to explain the same repeat purchases, so switching state
+dependence on *shrinks* the `alpha` posterior -- on simulated panels the average
+spread of the household intercepts fell from 0.93 to 0.74. Less spread means
+less in-sample overfitting by `alpha`, which raises `Dbar`. Conditional DIC
+therefore rewards whichever model lets `alpha` absorb more, and that is the
+`gamma = 0` model by construction.
+
+This is not a small effect. On ten simulated panels with a true `gamma` of 0.6
+(H = 400, B = 5, T = 14) `Dbar` was worse under state dependence in 10 runs out
+of 10, `pD` fell in 10 out of 10, and `delta DIC` picked the wrong model in 1 run
+out of 10 -- while the placebo-based EXCESS interval was right in 10 out of 10.
+That is why `verdict` does not depend on DIC.
 
 - `:na` -- no nested fit to compare against (`compare_null = false`).
-- `:penalty_driven` -- `Dbar` and `DIC` disagree about which model is better,
-  so the sign is set by the penalty rather than by fit. Do not read it.
-- `:unresolved` -- `|delta DIC|` is small next to `pD` itself. The two fits also
-  come from different seeds, so a difference this size is Monte Carlo noise.
-- `:ok` -- neither pathology applies. Still only one piece of evidence, and a
-  weaker one than the placebo.
+- `:penalty_driven` -- `Dbar` and `DIC` disagree about which model is better, so
+  the sign is set by the penalty rather than by fit.
+- `:contradicts_excess` -- the EXCESS interval excludes zero yet DIC prefers the
+  model without state dependence. This is the configuration the bias above
+  produces, so it says nothing about state dependence. Checked before
+  `:unresolved`, because "inside Monte Carlo error" would wrongly suggest that
+  more draws could settle the question the right way.
+- `:unresolved` -- `|delta DIC|` is inside Monte Carlo error (twice the MCSE,
+  which also ignores that the two fits use different seeds).
+- `:ok` -- none of the above. Still only reference, and weaker than the placebo.
 
 Note that `log ML` is computed from the same draws as `DIC` (and by the harmonic
 mean estimator, which has infinite variance and is dominated by the single
@@ -391,13 +415,42 @@ function dic_status(r::DHRTestResult)
     ddic = r.dic_sd - r.dic_nosd
     dbar = (r.dic_sd - ps) - (r.dic_nosd - p0)
     (ddic > 0) != (dbar > 0) && return :penalty_driven
-    abs(ddic) < 0.10 * max(ps, p0) && return :unresolved
+    # Checked before :unresolved on purpose. When EXCESS is significant and DIC
+    # still prefers the null, "inside Monte Carlo error" is true but misleading:
+    # it invites the reader to think more draws would settle it correctly.
+    if r.excess_ci !== nothing && (r.excess_ci[1] > 0 || r.excess_ci[2] < 0) &&
+       ddic >= 0
+        return :contradicts_excess
+    end
+    abs(ddic) < 2 * dic_mcse(r) && return :unresolved
     return :ok
+end
+
+"""
+    dic_mcse(r::DHRTestResult)
+
+Approximate Monte Carlo standard error of `delta_dic`.
+
+`Dbar = -2 * mean(loglik)`, so its MCSE is `2 * sd(loglik) / sqrt(ESS)`; with
+`DIC = 2*Dbar - Dhat` and `Dhat` treated as fixed, the DIC inherits twice that.
+The two models are independent runs, so the errors add in quadrature. This
+ignores the error in `Dhat` and so understates the true uncertainty a little.
+"""
+function dic_mcse(r::DHRTestResult)
+    r.dic_nosd === nothing && return NaN
+    function se(f)
+        n = ess(f.loglik)
+        isfinite(n) && n > 0 || (n = size(f.loglik, 1))   # conservative fallback
+        return 4 * std(vec(f.loglik)) / sqrt(n)
+    end
+    return hypot(se(r.fits.sd), se(r.fits.null))
 end
 
 function _dic_caution(io::IO, r::DHRTestResult)
     st = dic_status(r)
-    (st === :ok || st === :na) && return nothing
+    st === :na && return nothing
+    println(io, "      (conditional DIC -- reference only, never the test; see dic_status)")
+    st === :ok && return nothing
     ps, p0 = r.fits.sd.p_D, r.fits.null.p_D
     ddic = r.delta_dic
     dbar = (r.dic_sd - ps) - (r.dic_nosd - p0)
@@ -405,19 +458,25 @@ function _dic_caution(io::IO, r::DHRTestResult)
         better = dbar < 0 ? "with" : "without"
         @printf(io, "CAUTION: mean deviance favours the model %s state dependence (%+.1f)\n",
                 better, dbar)
-        @printf(io, "         while DIC goes the other way (%+.1f), because pD moves by\n",
+        @printf(io, "         while DIC goes the other way (%+.1f), so the sign is set by the\n",
                 ddic)
-        @printf(io, "         %+.1f. This is conditional DIC: gamma and the %d household\n",
-                ps - p0, r.n_households)
-        println(io, "         intercepts compete for the same repeats, so switching gamma on")
-        println(io, "         widens the alpha posterior and inflates the penalty. The sign")
-        println(io, "         here is set by the penalty, not by fit -- do not read it as")
-        println(io, "         evidence either way. Read EXCESS instead.")
-    else
-        @printf(io, "CAUTION: |delta DIC| (%.1f) is small next to pD itself (%.1f), and the\n",
-                abs(ddic), max(ps, p0))
-        println(io, "         two models were run from different seeds, so a difference this")
-        println(io, "         size is Monte Carlo noise. Do not let it decide the verdict.")
+        @printf(io, "         penalty (pD %+.1f), not by fit. Do not read it either way.\n",
+                ps - p0)
+    elseif st === :unresolved
+        @printf(io, "CAUTION: |delta DIC| (%.1f) is inside Monte Carlo error (2 x MCSE = %.1f),\n",
+                abs(ddic), 2 * dic_mcse(r))
+        println(io, "         and the two fits use different seeds on top of that. Do not read it.")
+    else   # :contradicts_excess
+        println(io, "CAUTION: EXCESS excludes zero but DIC prefers the model WITHOUT state")
+        println(io, "         dependence. That pairing is what this DIC produces by design, not")
+        println(io, "         a finding: being conditional on the household intercepts, it")
+        println(io, "         rewards whichever model lets alpha absorb more of the repeat")
+        @printf(io, "         purchasing -- the gamma = 0 model. It shows in Dbar (%+.1f), not\n",
+                dbar)
+        @printf(io, "         in the penalty (pD %+.1f). On simulated panels with a true gamma\n",
+                ps - p0)
+        println(io, "         of 0.6 this comparison picked the wrong model in 1 run out of 10")
+        println(io, "         while EXCESS was right in 10 of 10. Read EXCESS.")
     end
     println(io, "         log ML above is a function of the same draws, so it is not an")
     println(io, "         independent second opinion.")
@@ -478,18 +537,10 @@ function Base.show(io::IO, ::MIME"text/plain", r::DHRTestResult)
             "state dependence: the lagged-choice effect survives the placebo" :
           r.verdict === :no_evidence ?
             "no evidence: heterogeneity alone reproduces the observed inertia" :
-            "inconclusive: gamma is positive but the model comparison does not agree"
+            "inconclusive: gamma excludes zero, but without the placebo there is\n" *
+            "         no way to tell state dependence from heterogeneity. Re-run\n" *
+            "         with placebo = true."
     @printf(io, "verdict: %s\n         %s\n", r.verdict, msg)
-    if r.verdict === :inconclusive
-        st = dic_status(r)
-        if st === :penalty_driven || st === :unresolved
-            @printf(io, "         NOTE: that disagreement is the DIC comparison alone, and it\n")
-            @printf(io, "         is %s here (see CAUTION above). gamma and EXCESS\n",
-                    st === :penalty_driven ? "penalty-driven" : "unresolved")
-            println(io, "         both clear their thresholds, so the evidence for state")
-            println(io, "         dependence is not actually in dispute.")
-        end
-    end
     if !isnan(r.gamma_rhat) && r.gamma_rhat > 1.01
         println(io, "WARNING: Rhat > 1.01 -- increase R or nchains before believing this.")
     end

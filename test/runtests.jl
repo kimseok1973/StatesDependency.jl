@@ -191,6 +191,12 @@ const FAST = (K = 2, R = 4_000, burnin = 1_500, thin = 2, nchains = 2, verbose =
         rw = cumsum(randn(rng, 2000, 3); dims = 1)
         @test split_rhat(rw) > 1.05
         @test ess(rw) < ess(iid)
+
+        # a single chain must still give a number, not NaN
+        one = randn(rng, 2000, 1)
+        @test isfinite(ess(one)) && ess(one) > 1000
+        @test isfinite(split_rhat(one))
+        @test isfinite(ess(cumsum(randn(rng, 2000, 1); dims = 1)))
     end
 
     @testset "recovery: true state dependence" begin
@@ -203,7 +209,7 @@ const FAST = (K = 2, R = 4_000, burnin = 1_500, thin = 2, nchains = 2, verbose =
         @test 0.7 < res.gamma_mean < 1.4
         @test res.gamma_ci[1] > 0                          # excludes zero
         @test res.excess_ci[1] > 0                         # survives the placebo
-        @test res.delta_dic < 0                            # SD model preferred
+        @test res.delta_dic < 0                            # DIC agrees here (reference only)
         @test res.verdict === :state_dependence
         @test res.odds_ratio ≈ exp(res.gamma_mean)
         @test res.delta_pp > 0
@@ -251,12 +257,15 @@ const FAST = (K = 2, R = 4_000, burnin = 1_500, thin = 2, nchains = 2, verbose =
                        nchains = 1, verbose = false)
 
         st = dic_status(res)
-        @test st in (:ok, :unresolved, :penalty_driven)
+        @test st in (:ok, :unresolved, :penalty_driven, :contradicts_excess)
         @test summarize(res).dic_status === st
+        @test isfinite(dic_mcse(res)) && dic_mcse(res) > 0
 
         io = IOBuffer(); show(io, MIME"text/plain"(), res)
         out = String(take!(io))
         @test occursin("pD", out)                        # the split is always shown
+        @test occursin("Dbar", out)
+        @test occursin("conditional DIC", out)           # always flagged as reference
         @test occursin("CAUTION", out) == (st !== :ok)   # the note appears iff needed
 
         # the label agrees with its own definition
@@ -266,23 +275,29 @@ const FAST = (K = 2, R = 4_000, burnin = 1_500, thin = 2, nchains = 2, verbose =
         if st === :penalty_driven
             @test (ddic > 0) != (dbar > 0)
         elseif st === :unresolved
-            @test abs(ddic) < 0.10 * max(ps, p0)
+            @test abs(ddic) < 2 * dic_mcse(res)
+        elseif st === :contradicts_excess
+            @test res.excess_ci[1] > 0 && ddic >= 0
         else
             @test (ddic > 0) == (dbar > 0)
-            @test abs(ddic) >= 0.10 * max(ps, p0)
+            @test abs(ddic) >= 2 * dic_mcse(res)
         end
 
-        # Dbar + pD must reconstruct the DIC that was reported
-        @test (res.dic_sd - ps) + ps ≈ res.dic_sd
-        @test occursin("Dbar", out)
+        # DIC does not gate the verdict: both intervals exclude zero, so the
+        # answer is :state_dependence whichever way delta_dic came out.
+        @test res.gamma_ci[1] > 0 && res.excess_ci[1] > 0
+        @test res.verdict === :state_dependence
 
         # no nested fit -> nothing to compare, nothing to warn about
         res2 = DHRTests(sim.X; K = 1, R = 1_500, burnin = 600, thin = 2,
                         nchains = 1, placebo = false, compare_null = false,
                         verbose = false)
         @test dic_status(res2) === :na
+        @test isnan(dic_mcse(res2))
         io = IOBuffer(); show(io, MIME"text/plain"(), res2)
         @test !occursin("CAUTION", String(take!(io)))
+        # ... and without a placebo the two stories cannot be separated at all
+        @test res2.verdict === :inconclusive
     end
 
     @testset "covariates" begin
